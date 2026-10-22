@@ -15,7 +15,7 @@ from pathlib import Path
 
 from oi_monitor.broadcast import BroadcastBook, deliver_webhook
 from oi_monitor.client import BinanceError
-from oi_monitor.metrics import attach_reads, judge, parse_limit
+from oi_monitor.metrics import attach_reads, parse_limit, screen_change
 from oi_monitor.service import Monitor
 from oi_monitor.trading import TradingDesk
 
@@ -132,7 +132,7 @@ def print_table(payload: dict, sort_key: str) -> None:
             pct_text(changes["24h"]["oiValuePct"]),
             pct_text(changes["1h"]["oiPct"]),
             pct_text(changes["24h"]["oiPct"]),
-            judge(changes["1h"]["oiPct"], changes["1h"]["pricePct"], BOOK.settings.get("priceChopPct") or 0.5)["text"],
+            screen_change(row["oiValue"], changes["1h"]["oiPct"], changes["1h"]["pricePct"], changes["1h"].get("oiValueDelta"), BOOK.settings.get("priceChopPct") or 0.5)["text"],
             compact_cn(row["marketCap"]),
             pct_text(row["oiToMarketCapPct"]),
         ]

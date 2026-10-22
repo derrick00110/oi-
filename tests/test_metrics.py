@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from oi_monitor.metrics import build_row, changes_for, judge, normalize, parse_limit, pct_change
+from oi_monitor.metrics import build_row, changes_for, judge, normalize, oi_move_threshold, parse_limit, pct_change
 
 
 def linear_series(n=97, oi0=100.0, oi1=110.0, v0=1000.0, v1=1300.0, supply=2000.0):
@@ -103,18 +103,24 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(funded["fundingRate"], 0.0001)
         self.assertEqual(funded["nextFundingTime"], 15)
 
-    def test_five_facts_and_chop_boundary(self):
-        self.assertEqual(judge(1, 1)["text"], "多头主导，看涨")
-        self.assertEqual(judge(1, -1)["text"], "空头主导，看跌")
-        self.assertEqual(judge(1, 0.2)["text"], "看不清，配合费率再判")
-        self.assertEqual(judge(-1, 1)["text"], "空头止损拉盘，大概率出向上的针")
-        self.assertEqual(judge(-1, -1)["text"], "多头派发第一阶段，可跟空")
-        self.assertEqual(judge(1, 0.5)["code"], "long-led")
-        self.assertEqual(judge(1, 0.49)["code"], "unclear")
+    def test_four_forms_and_tiered_threshold(self):
+        self.assertEqual(judge(1, 1)["text"], "优先推报，做多信号")
+        self.assertEqual(judge(1, -1)["text"], "可能为出货、洗盘或蓄力")
+        self.assertEqual(judge(1, 0.2)["text"], "可能为出货、洗盘或蓄力")
+        self.assertEqual(judge(-1, 1)["text"], "持仓减少、价格上涨，需观望")
+        self.assertEqual(judge(-1, -1)["text"], "弃盘行情，需观望")
+        self.assertEqual(judge(1, 0.5)["code"], "long")
+        self.assertEqual(judge(1, 0.49)["code"], "wash")
         self.assertEqual(judge(0, 3)["code"], "oi-flat")
         self.assertEqual(judge(None, 3)["code"], "no-oi")
         self.assertEqual(judge(-2, None)["code"], "no-price")
-        self.assertEqual(judge(-2, 0.1)["code"], "oi-down-chop")
+        self.assertEqual(judge(-2, 0.1)["code"], "watch-flat")
+        self.assertIsNone(oi_move_threshold(4_000_000))
+        self.assertEqual(oi_move_threshold(5_000_000), 10)
+        self.assertEqual(oi_move_threshold(10_000_000), 10)
+        self.assertEqual(oi_move_threshold(10_000_001), 7)
+        self.assertEqual(oi_move_threshold(15_000_001), 5)
+        self.assertEqual(oi_move_threshold(30_000_000), 5)
 
     def test_parse_limit(self):
         self.assertEqual(parse_limit("60"), 60)

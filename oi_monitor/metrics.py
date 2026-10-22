@@ -161,16 +161,28 @@ def usdt_perpetuals(exchange_info: dict) -> dict[str, str]:
 
 
 FACTS = {
-    ("up", "up"): ("long-led", "多头主导，看涨", "up"),
-    ("up", "down"): ("short-led", "空头主导，看跌", "down"),
-    ("up", "chop"): ("unclear", "看不清，配合费率再判", "flat"),
-    ("down", "up"): ("short-cover", "空头止损拉盘，大概率出向上的针", "up"),
-    ("down", "down"): ("long-distribute", "多头派发第一阶段，可跟空", "down"),
+    ("up", "up"): ("long", "优先推报，做多信号", "up"),
+    ("up", "down"): ("wash", "可能为出货、洗盘或蓄力", "flat"),
+    ("up", "chop"): ("wash", "可能为出货、洗盘或蓄力", "flat"),
+    ("down", "up"): ("watch-up", "持仓减少、价格上涨，需观望", "flat"),
+    ("down", "down"): ("abandon", "弃盘行情，需观望", "flat"),
+    ("down", "chop"): ("watch-flat", "持仓减少、价格持平，需观望", "flat"),
 }
 
 
+def oi_move_threshold(oi_value: float) -> float | None:
+    """OI-quantity percent gate. It steps down as the USDT open interest grows."""
+    if oi_value < 5_000_000:
+        return None
+    if oi_value <= 10_000_000:
+        return 10.0
+    if oi_value <= 15_000_000:
+        return 7.0
+    return 5.0
+
+
 def judge(oi_pct, price_pct, chop_pct: float = 0.5) -> dict:
-    """Read the five OI-and-price facts from contract quantity, not USDT notional."""
+    """Four OI-and-price forms. Quantity moves, not USDT notional."""
     chop = abs(float(chop_pct))
     if oi_pct is None:
         return {"code": "no-oi", "text": "持仓数量缺失，暂不判断", "oiSide": None, "priceSide": None, "bias": "flat"}
@@ -185,16 +197,41 @@ def judge(oi_pct, price_pct, chop_pct: float = 0.5) -> dict:
         price_side = "up"
     else:
         price_side = "down"
-    if oi_side == "down" and price_side == "chop":
-        return {
-            "code": "oi-down-chop",
-            "text": "持仓减少、价格震荡，先不判方向",
-            "oiSide": oi_side,
-            "priceSide": price_side,
-            "bias": "flat",
-        }
     code, text, bias = FACTS[(oi_side, price_side)]
     return {"code": code, "text": text, "oiSide": oi_side, "priceSide": price_side, "bias": bias}
+
+
+def screen_change(oi_value, oi_pct, price_pct, oi_value_delta, chop_pct: float = 0.5) -> dict:
+    """Apply the tiered gate, the 20M watershed, and the short-term doubling alert."""
+    verdict = judge(oi_pct, price_pct, chop_pct)
+    current = None if oi_value is None else float(oi_value)
+    previous = None
+    if current is not None and oi_value_delta is not None:
+        previous = current - float(oi_value_delta)
+    doubled = bool(previous and previous > 0 and current is not None and current >= 5_000_000 and current >= previous * 2)
+    watershed = bool(previous is not None and current is not None and previous < 20_000_000 <= current)
+    threshold = None if current is None else oi_move_threshold(current)
+    moved = oi_pct is not None and threshold is not None and abs(oi_pct) >= threshold
+    qualified = bool(moved or doubled or watershed)
+    fact = verdict["text"]
+    if qualified and doubled:
+        shown = f"最高级别。{fact}"
+    elif qualified and watershed:
+        shown = f"{fact}。未平仓合约量达到2000万关键分水岭"
+    elif qualified:
+        shown = fact
+    else:
+        shown = "未达门槛"
+    return {
+        **verdict,
+        "fact": fact,
+        "text": shown,
+        "qualified": qualified,
+        "doubled": doubled,
+        "watershed": watershed,
+        "threshold": threshold,
+        "previous": previous,
+    }
 
 
 def attach_reads(rows: list[dict], chop_pct: float) -> list[dict]:
@@ -202,7 +239,13 @@ def attach_reads(rows: list[dict], chop_pct: float) -> list[dict]:
     for row in rows:
         item = dict(row)
         item["reads"] = {
-            name: judge(change.get("oiPct"), change.get("pricePct"), chop_pct)
+            name: screen_change(
+                row.get("oiValue"),
+                change.get("oiPct"),
+                change.get("pricePct"),
+                change.get("oiValueDelta"),
+                chop_pct,
+            )
             for name, change in (row.get("changes") or {}).items()
         }
         attached.append(item)

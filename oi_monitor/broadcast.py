@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from oi_monitor.metrics import judge
+from oi_monitor.metrics import judge, screen_change
 
 WINDOWS = {"15m": "15分钟", "1h": "1小时", "4h": "4小时", "24h": "24小时"}
 WINDOW_SECONDS = {"15m": 900, "1h": 3600, "4h": 14400, "24h": 86400}
@@ -21,15 +21,16 @@ DIRECTIONS = {"up", "down", "both"}
 def default_rules() -> list[dict]:
     return [
         {
-            "id": "oi-1h-band",
+            "id": "oi-dynamic",
             "enabled": True,
             "window": "1h",
             "metric": "oiPct",
             "direction": "both",
             "minAbsPct": 10,
             "minOiValue": 5_000_000,
-            "maxOiValue": 10_000_000,
-            "minPricePct": 5,
+            "maxOiValue": None,
+            "minPricePct": None,
+            "dynamic": True,
             "cooldownSec": 900,
         },
     ]
@@ -88,6 +89,7 @@ def _clean_rule(raw: dict, fallback_id: str) -> dict:
         "minOiValue": min_value,
         "maxOiValue": None if max_value is None else round(max_value, 2),
         "minPricePct": None if min_price is None else round(min_price, 4),
+        "dynamic": bool(raw.get("dynamic", False)),
         "cooldownSec": cooldown,
     }
 
@@ -220,7 +222,60 @@ def funding_phrase(rate) -> str:
     return f"资金费率 {percent:+.4f}%，{who}"
 
 
+def _sentence(row: dict, rule: dict, change: dict, conclusion: str, mark: str) -> str:
+    ratio = "暂无" if row.get("oiToMarketCapPct") is None else f"{row['oiToMarketCapPct']:.1f}%"
+    symbol = row.get("symbol") or row.get("base")
+    return (
+        f"{mark} [{symbol}] 币安未平仓合约量 {signed_pct(change.get('oiPct'))}，"
+        f"{price_phrase(WINDOW_SECONDS[rule['window']], change.get('pricePct'))}，"
+        f"未平仓合约量：{usd_text(row.get('oiValue'))}，"
+        f"未平仓合约量/市值比率：{ratio}，"
+        f"24 小时价格变动：{signed_pct(row.get('priceChangePercent'))}。"
+        f"{conclusion}"
+    )
+
+
+def describe(row: dict, rule: dict, chop_pct: float = 0.5) -> dict | None:
+    change = (row.get("changes") or {}).get(rule["window"]) or {}
+    if rule.get("dynamic"):
+        screened = screen_change(
+            row.get("oiValue"),
+            change.get("oiPct"),
+            change.get("pricePct"),
+            change.get("oiValueDelta"),
+            chop_pct,
+        )
+        if not screened["qualified"]:
+            return None
+        notes = []
+        if screened["doubled"]:
+            notes.append("最高级别")
+            notes.append(
+                f"持仓价值从 {usd_text(screened['previous'])} 增至 {usd_text(row.get('oiValue'))}，短时间翻倍"
+            )
+        if screened["watershed"]:
+            notes.append("未平仓合约量达到2000万关键分水岭，庄家常在此离场或加速拉升")
+        notes.append(screened["fact"])
+        mark = "🟢" if screened["doubled"] or screened["code"] == "long" else "⚪"
+        rank = 3 if screened["doubled"] else (2 if screened["code"] == "long" else 1)
+        return {
+            "text": _sentence(row, rule, change, "。".join(notes), mark),
+            "move": change.get("oiPct") or 0,
+            "rank": rank,
+            "fact": screened["fact"],
+        }
+    text = _compose_fixed(row, rule, chop_pct, change)
+    if text is None:
+        return None
+    return {"text": text, "move": change.get(rule["metric"]) or 0, "rank": 1, "fact": judge(change.get("oiPct"), change.get("pricePct"), chop_pct)["text"]}
+
+
 def compose(row: dict, rule: dict, chop_pct: float = 0.5) -> str | None:
+    hit = describe(row, rule, chop_pct)
+    return None if hit is None else hit["text"]
+
+
+def _compose_fixed(row: dict, rule: dict, chop_pct: float, change: dict | None = None) -> str | None:
     change = (row.get("changes") or {}).get(rule["window"]) or {}
     move = change.get(rule["metric"])
     if move is None or abs(move) < rule["minAbsPct"]:
@@ -242,20 +297,8 @@ def compose(row: dict, rule: dict, chop_pct: float = 0.5) -> str | None:
             return None
     oi_change = change.get("oiPct")
     verdict = judge(oi_change, change.get("pricePct"), chop_pct)
-    mark = {"up": "🟢", "down": "🔴"}.get(verdict["bias"], "⚪")
-    conclusion = verdict["text"]
-    if verdict["code"] in {"unclear", "oi-down-chop"}:
-        conclusion = f"{conclusion}，{funding_phrase(row.get('fundingRate'))}"
-    ratio = "暂无" if row.get("oiToMarketCapPct") is None else f"{row['oiToMarketCapPct']:.1f}%"
-    symbol = row.get("symbol") or row.get("base")
-    return (
-        f"{mark} [{symbol}] 币安未平仓合约量 {signed_pct(oi_change)}，"
-        f"{price_phrase(WINDOW_SECONDS[rule['window']], change.get('pricePct'))}，"
-        f"未平仓合约量：{usd_text(row.get('oiValue'))}，"
-        f"未平仓合约量/市值比率：{ratio}，"
-        f"24 小时价格变动：{signed_pct(row.get('priceChangePercent'))}。"
-        f"{conclusion}"
-    )
+    mark = "🟢" if verdict["code"] == "long" else "⚪"
+    return _sentence(row, rule, change, verdict["text"], mark)
 
 
 class BroadcastBook:
@@ -304,17 +347,16 @@ class BroadcastBook:
             chop = float(self.settings.get("priceChopPct") or 0.5)
         for row in rows:
             for rule in rules:
-                text = compose(row, rule, chop)
-                if text is None:
+                hit = describe(row, rule, chop)
+                if hit is None:
                     continue
-                change = row["changes"][rule["window"]]
-                move = change[rule["metric"]]
+                move = hit["move"]
                 key = f"{rule['id']}|{row['symbol']}|{'up' if move > 0 else 'down'}"
-                matches.append((abs(move), key, text, row, rule, move))
-        matches.sort(key=lambda item: item[0], reverse=True)
+                matches.append((hit["rank"], abs(move), key, hit["text"], row, rule, move, hit["fact"]))
+        matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
         created = []
         with self._lock:
-            for _score, key, text, row, rule, move in matches:
+            for _rank, _score, key, text, row, rule, move, fact in matches:
                 if len(created) >= cap:
                     break
                 previous = self.seen.get(key) or {}
@@ -332,11 +374,7 @@ class BroadcastBook:
                     "metric": rule["metric"],
                     "move": round(float(move), 4),
                     "text": text,
-                    "fact": judge(
-                        (row.get("changes") or {}).get(rule["window"], {}).get("oiPct"),
-                        (row.get("changes") or {}).get(rule["window"], {}).get("pricePct"),
-                        chop,
-                    )["text"],
+                    "fact": fact,
                 }
                 self.next_id += 1
                 self.items.append(item)

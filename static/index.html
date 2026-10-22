@@ -99,12 +99,10 @@
         <option value="up">只看价值增加</option>
         <option value="down">只看价值减少</option>
         <option value="hot">只看异动</option>
-        <option value="long-led">多头主导，看涨</option>
-        <option value="short-led">空头主导，看跌</option>
-        <option value="unclear">持仓涨、价格震荡</option>
-        <option value="oi-down-chop">持仓跌、价格震荡</option>
-        <option value="short-cover">空头止损拉盘</option>
-        <option value="long-distribute">多头派发，可跟空</option>
+        <option value="long">优先推报，做多</option>
+        <option value="wash">出货、洗盘或蓄力</option>
+        <option value="abandon">弃盘行情</option>
+        <option value="watch-up">持仓减少、价格上涨</option>
       </select>
     </label>
     <label>异动
@@ -128,7 +126,7 @@
     <span id="count" class="meta"></span>
   </section>
 
-  <p class="note">事实按持仓数量算，不按持仓价值。持仓涨且价格涨：多头主导，看涨。持仓涨且价格跌：空头主导，看跌。持仓涨且价格在震荡带里：看不清，播报带上资金费率。持仓跌且价格涨：空头止损拉盘，大概率出向上的针。持仓跌且价格跌：多头派发第一阶段，可跟空。持仓跌且价格在震荡带里：先不判方向，播报仍带资金费率。播报只抓这一种异动：持仓价值在 500 万到 1000 万 USDT，过去 60 分钟持仓数量涨或跌至少 10%，并且价格上涨至少 5%。价格下跌不播。</p>
+  <p class="note">门槛随持仓价值降低：500万到1000万要持仓数量变动 10%，1000万到1500万要 7%，1500万以上要 5%。未到 500 万不播。持仓涨且价格涨：优先推报，做多。持仓涨且价格跌或平：可能为出货、洗盘或蓄力。持仓跌且价格跌：弃盘行情，需观望。持仓跌且价格涨：需观望。60 分钟内持仓价值翻倍是最高级别。持仓价值跨过 2000 万单独提醒，庄家常在此离场或加速拉升。</p>
 
   <div class="table-wrap">
     <table>

@@ -153,9 +153,9 @@ function visibleRows() {
     if (state.only === "up" && !(change > 0)) return false;
     if (state.only === "down" && !(change < 0)) return false;
     if (state.only === "hot" && !(change != null && Math.abs(change) >= hotAt)) return false;
-    if (["long-led", "short-led", "unclear", "short-cover", "long-distribute", "oi-down-chop"].includes(state.only)) {
+    if (["long", "wash", "abandon", "watch-up", "watch-flat"].includes(state.only)) {
       const read = row.reads?.[state.window];
-      if (!read || read.code !== state.only) return false;
+      if (!read || !read.qualified || read.code !== state.only) return false;
     }
     return true;
   }).sort((a, b) => {

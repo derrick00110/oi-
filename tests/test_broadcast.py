@@ -10,12 +10,12 @@ from oi_monitor.trading import TradingDesk, sign_query
 from oi_monitor.client import BinanceError
 
 
-def row(symbol="BTCUSDT", base="BTC", move=6.5, oi_move=None, price_move=5.2, oi_value=7_600_000_000, funding=None):
+def row(symbol="BTCUSDT", base="BTC", move=6.5, oi_move=None, price_move=5.2, oi_value=7_600_000_000, funding=None, value_delta=460_000_000):
     change = {
         "oiPct": move if oi_move is None else oi_move,
         "oiValuePct": move,
         "oiDelta": 1000,
-        "oiValueDelta": 460_000_000,
+        "oiValueDelta": value_delta,
         "pricePct": price_move,
     }
     return {
@@ -34,6 +34,7 @@ def row(symbol="BTCUSDT", base="BTC", move=6.5, oi_move=None, price_move=5.2, oi
 
 def loose_rule():
     rule = dict(default_rules()[0])
+    rule["dynamic"] = False
     rule["minAbsPct"] = 0.1
     rule["minOiValue"] = 0
     rule["maxOiValue"] = None
@@ -55,7 +56,7 @@ class BroadcastTest(unittest.TestCase):
         self.assertIn("未平仓合约量：750 万美元", text)
         self.assertIn("未平仓合约量/市值比率：0.5%", text)
         self.assertIn("24 小时价格变动：-4.2%", text)
-        self.assertIn("多头主导，看涨", text)
+        self.assertIn("优先推报，做多信号", text)
         body = text.split("] ", 1)[1]
         self.assertNotRegex(body, r"[A-Za-z]")
 
@@ -63,31 +64,38 @@ class BroadcastTest(unittest.TestCase):
         small = compose(row(oi_value=4_500_000), small_rule)
         self.assertIn("450 万美元", small)
 
-    def test_band_requires_oi_range_quantity_and_price_rise(self):
+    def test_tiered_gate_four_forms_double_and_watershed(self):
         rule = default_rules()[0]
-        self.assertEqual(rule["minAbsPct"], 10)
-        self.assertEqual(rule["minOiValue"], 5_000_000)
-        self.assertEqual(rule["maxOiValue"], 10_000_000)
-        self.assertEqual(rule["minPricePct"], 5)
-        self.assertIsNotNone(compose(band_row(), rule))
-        self.assertIsNotNone(compose(band_row(oi_move=-12), rule))
-        self.assertIsNotNone(compose(band_row(oi_value=5_000_000), rule))
-        self.assertIsNotNone(compose(band_row(oi_value=10_000_000, price_move=5), rule))
+        self.assertTrue(rule["dynamic"])
+        self.assertIn("优先推报，做多信号", compose(band_row(), rule))
+        self.assertIn("可能为出货、洗盘或蓄力", compose(band_row(price_move=-3), rule))
+        self.assertIn("可能为出货、洗盘或蓄力", compose(band_row(price_move=0.1), rule))
+        self.assertIn("弃盘行情，需观望", compose(band_row(oi_move=-12, price_move=-3), rule))
+        self.assertIn("持仓减少、价格上涨，需观望", compose(band_row(oi_move=-12, price_move=3), rule))
         self.assertIsNone(compose(band_row(move=9.9), rule))
-        self.assertIsNone(compose(band_row(price_move=4.9), rule))
-        self.assertIsNone(compose(band_row(price_move=-6), rule))
-        self.assertIsNone(compose(band_row(oi_value=4_999_999), rule))
-        self.assertIsNone(compose(band_row(oi_value=10_000_001), rule))
+        self.assertIsNone(compose(band_row(oi_value=4_000_000), rule))
+        self.assertIn("优先推报，做多信号", compose(band_row(oi_value=12_000_000, move=7), rule))
+        self.assertIsNone(compose(band_row(oi_value=12_000_000, move=6.9), rule))
+        self.assertIn("优先推报，做多信号", compose(band_row(oi_value=18_000_000, move=5), rule))
+        self.assertIsNone(compose(band_row(oi_value=18_000_000, move=4.9), rule))
+
+        doubled = compose(band_row(oi_value=10_000_000, value_delta=5_000_000, move=100, price_move=8), rule)
+        self.assertIn("最高级别", doubled)
+        self.assertIn("短时间翻倍", doubled)
+        self.assertIn("优先推报，做多信号", doubled)
+
+        crossed = compose(band_row(oi_value=20_100_000, value_delta=500_000, move=2.5, price_move=1), rule)
+        self.assertIn("2000万关键分水岭", crossed)
 
     def test_five_facts_follow_quantity_not_notional(self):
         rule = loose_rule()
         cases = [
-            (2, 1, None, "🟢", "多头主导，看涨"),
-            (2, -1, None, "🔴", "空头主导，看跌"),
-            (2, 0.1, 0.0001, "⚪", "看不清，配合费率再判，资金费率 +0.0100%，多头付给空头"),
-            (-2, 1, None, "🟢", "空头止损拉盘，大概率出向上的针"),
-            (-2, -1, None, "🔴", "多头派发第一阶段，可跟空"),
-            (-2, 0.1, -0.00025, "⚪", "持仓减少、价格震荡，先不判方向，资金费率 -0.0250%，空头付给多头"),
+            (2, 1, None, "🟢", "优先推报，做多信号"),
+            (2, -1, None, "⚪", "可能为出货、洗盘或蓄力"),
+            (2, 0.1, 0.0001, "⚪", "可能为出货、洗盘或蓄力"),
+            (-2, 1, None, "⚪", "持仓减少、价格上涨，需观望"),
+            (-2, -1, None, "⚪", "弃盘行情，需观望"),
+            (-2, 0.1, -0.00025, "⚪", "持仓减少、价格持平，需观望"),
         ]
         for oi_move, price_move, funding, mark, fact in cases:
             text = compose(row(oi_move=oi_move, price_move=price_move, funding=funding), rule, 0.5)
@@ -98,8 +106,8 @@ class BroadcastTest(unittest.TestCase):
         value_rule = dict(rule)
         value_rule["metric"] = "oiValuePct"
         text = compose(disguised, value_rule, 0.5)
-        self.assertIn("空头止损拉盘，大概率出向上的针", text)
-        self.assertNotIn("多头主导", text)
+        self.assertIn("持仓减少、价格上涨，需观望", text)
+        self.assertNotIn("优先推报", text)
 
     def test_threshold_cooldown_and_cap(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -112,6 +120,13 @@ class BroadcastTest(unittest.TestCase):
             self.assertEqual(book.evaluate([band_row()], 2000, now=1_100), [])
             again = book.evaluate([band_row()], 3000, now=1_000 + 901)
             self.assertEqual(len(again), 1)
+
+            book.settings["maxPerRound"] = 1
+            plain = band_row(symbol="AAAUSDT", base="AAA", move=40)
+            doubled = band_row(symbol="BBBUSDT", base="BBB", oi_value=10_000_000, value_delta=5_000_000, move=12)
+            first_only = book.evaluate([plain, doubled], 8000, now=4_000)
+            self.assertEqual(first_only[0]["symbol"], "BBBUSDT")
+            self.assertIn("最高级别", first_only[0]["text"])
 
             book.settings["maxPerRound"] = 5
             rows = [band_row(symbol=f"C{i}USDT", base=f"C{i}", move=20 - i) for i in range(6)]
