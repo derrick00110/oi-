@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-rise="green">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>oi事实监测播报</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark">播</span>
+      <div>
+        <h1>oi事实监测播报</h1>
+        <p>持仓数量和价格一起看。公开行情，不需要币安 API Key。下单要单独确认。</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span id="meta" class="meta"></span>
+      <button type="button" id="rise" title="切换涨跌颜色">绿涨红跌</button>
+      <button type="button" id="refresh" class="primary">刷新</button>
+    </div>
+  </header>
+
+  <section class="broadcast" aria-label="播报">
+    <div class="broadcast-head">
+      <h2>播报</h2>
+      <label class="check"><input id="voice" type="checkbox"> 语音播报</label>
+      <span id="broadcastMeta" class="meta"></span>
+    </div>
+    <div id="feed"></div>
+    <div id="rules"></div>
+    <div class="rule chop-row">
+      <span>价格震荡带</span>
+      <input id="chopPct" type="number" min="0.05" max="20" step="0.05" value="0.5">
+      <span>% 以内算价格没动。判断用持仓数量，不用持仓价值。</span>
+      <button type="button" id="saveChop">保存震荡带</button>
+    </div>
+  </section>
+
+  <details class="trade">
+    <summary>手动下单（默认关闭，不会跟着播报自动成交）</summary>
+    <p id="tradeStatus" class="meta"></p>
+    <div class="trade-grid">
+      <label>合约 <input id="orderSymbol" value="BTCUSDT" autocomplete="off"></label>
+      <label>方向
+        <select id="orderSide">
+          <option value="BUY">买入（做多）</option>
+          <option value="SELL">卖出（做空）</option>
+        </select>
+      </label>
+      <label>类型
+        <select id="orderType">
+          <option value="MARKET">市价</option>
+          <option value="LIMIT">限价</option>
+        </select>
+      </label>
+      <label>数量 <input id="orderQty" inputmode="decimal" placeholder="0.001"></label>
+      <label>限价 <input id="orderPrice" inputmode="decimal" placeholder="市价可留空"></label>
+      <label class="check"><input id="reduceOnly" type="checkbox"> 只减仓</label>
+      <button type="button" id="previewOrder">预览</button>
+      <button type="button" id="sendOrder" class="primary">确认下单</button>
+    </div>
+    <p id="preview"></p>
+    <form id="keyForm" class="trade-grid">
+      <label>API Key <input id="apiKey" type="password" autocomplete="off"></label>
+      <label>API Secret <input id="apiSecret" type="password" autocomplete="off"></label>
+      <button type="submit">保存在本机</button>
+      <button type="button" id="testTrade">测试连接</button>
+      <button type="button" id="clearKeys">清除密钥</button>
+    </form>
+    <p class="note">密钥只写在这台机器的 data 目录或环境变量里，页面不会再显示完整密钥。真实下单还要在启动前设置 TRADING_ENABLED=1，并且单笔有名义价值上限。播报线程不会调用下单。</p>
+  </details>
+
+  <section class="stats" id="stats" hidden></section>
+  <div id="banner" class="banner" hidden></div>
+
+  <section class="toolbar">
+    <label>范围
+      <select id="limit">
+        <option value="30">成交额前 30</option>
+        <option value="60" selected>成交额前 60</option>
+        <option value="120">成交额前 120</option>
+        <option value="240">成交额前 240</option>
+        <option value="all">全市场</option>
+      </select>
+    </label>
+    <div class="windows" id="windows" role="group" aria-label="涨跌幅窗口">
+      <span class="group-label">窗口</span>
+      <button type="button" data-window="15m">15分钟</button>
+      <button type="button" data-window="1h" class="active">1小时</button>
+      <button type="button" data-window="4h">4小时</button>
+      <button type="button" data-window="24h">24小时</button>
+    </div>
+    <label>方向
+      <select id="only">
+        <option value="all">全部</option>
+        <option value="up">只看价值增加</option>
+        <option value="down">只看价值减少</option>
+        <option value="hot">只看异动</option>
+        <option value="long-led">多头主导，看涨</option>
+        <option value="short-led">空头主导，看跌</option>
+        <option value="unclear">持仓涨、价格震荡</option>
+        <option value="oi-down-chop">持仓跌、价格震荡</option>
+        <option value="short-cover">空头止损拉盘</option>
+        <option value="long-distribute">多头派发，可跟空</option>
+      </select>
+    </label>
+    <label>异动
+      <input id="hotPct" type="number" min="0.5" max="100" step="0.5" value="5">
+      <span class="suffix">%</span>
+    </label>
+    <label>持仓价值
+      <select id="minOi">
+        <option value="0">不限</option>
+        <option value="10000000">≥ 1000万</option>
+        <option value="100000000">≥ 1亿</option>
+        <option value="500000000">≥ 5亿</option>
+        <option value="1000000000">≥ 10亿</option>
+      </select>
+    </label>
+    <label class="search">搜索
+      <input id="query" type="search" placeholder="BTC、1000PEPE" autocomplete="off">
+    </label>
+    <label class="check"><input id="auto" type="checkbox" checked> 60秒自动刷新</label>
+    <button type="button" id="export">导出 CSV</button>
+    <span id="count" class="meta"></span>
+  </section>
+
+  <p class="note">事实按持仓数量算，不按持仓价值。持仓涨且价格涨：多头主导，看涨。持仓涨且价格跌：空头主导，看跌。持仓涨且价格在震荡带里：看不清，播报带上资金费率。持仓跌且价格涨：空头止损拉盘，大概率出向上的针。持仓跌且价格跌：多头派发第一阶段，可跟空。持仓跌且价格在震荡带里：先不判方向，播报仍带资金费率。涨跌幅阈值你还没定，现在先用 1 小时 5%、24 小时 15%。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="symbol">币种</th>
+          <th class="num" data-sort="price">价格</th>
+          <th class="num" data-sort="priceChangePercent">价格24h</th>
+          <th class="num" data-sort="oi" title="当前持仓的币数量，sumOpenInterest">持仓量</th>
+          <th class="num" data-sort="oiValue" title="当前持仓的 USDT 名义价值，sumOpenInterestValue">持仓价值</th>
+          <th class="num" id="valueSort" data-sort="oiValue:1h" title="持仓价值相对所选窗口的涨跌幅">价值涨跌 · 1小时</th>
+          <th class="num" id="oiSort" data-sort="oi:1h" title="持仓币数相对所选窗口的涨跌幅，不含价格">数量涨跌 · 1小时</th>
+          <th id="factSort" title="用持仓数量和同一窗口的价格变化判断">事实 · 1小时</th>
+          <th class="num" data-sort="marketCap">市值</th>
+          <th class="num" data-sort="oiToMarketCapPct" title="持仓价值除以市值">OI/市值</th>
+          <th class="num" data-sort="quoteVolume">24h成交额</th>
+          <th>价值趋势</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <footer>
+    数据来自币安 U 本位公开接口：持仓历史、24 小时行情，以及一次取完全市场的资金费率。大约每 15 分钟一个持仓点。不会自动下单。指数合约没有流通量时，市值说「暂无」。
+  </footer>
+  <script src="/app.js"></script>
+  <script src="/broadcast.js"></script>
+</body>
+</html>
