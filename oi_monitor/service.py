@@ -52,7 +52,14 @@ class Monitor:
             raise BinanceError("扫描失败，请重试")
         try:
             payload = self._scan_uncached(limit)
-            ttl = 5 if not payload["rows"] else (180 if key == 0 or key > 200 else 45)
+            if not payload["rows"]:
+                ttl = 5
+            elif key == 0 or key >= 300:
+                ttl = 300
+            elif key > 200:
+                ttl = 180
+            else:
+                ttl = 45
             stored = (time.monotonic(), payload, ttl)
             with self._lock:
                 self._cache[key] = stored

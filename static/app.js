@@ -14,7 +14,7 @@ const state = {
   req: 0,
   timer: 0,
   open: new Set(),
-  limit: "60",
+  limit: "400",
   window: "1h",
   sort: "oiValue:1h",
   desc: true,

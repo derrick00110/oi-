@@ -21,33 +21,25 @@ DIRECTIONS = {"up", "down", "both"}
 def default_rules() -> list[dict]:
     return [
         {
-            "id": "oi-1h",
+            "id": "oi-1h-band",
             "enabled": True,
             "window": "1h",
             "metric": "oiPct",
             "direction": "both",
-            "minAbsPct": 5,
-            "minOiValue": 10_000_000,
+            "minAbsPct": 10,
+            "minOiValue": 5_000_000,
+            "maxOiValue": 10_000_000,
+            "minPricePct": 5,
             "cooldownSec": 900,
-        },
-        {
-            "id": "oi-24h",
-            "enabled": True,
-            "window": "24h",
-            "metric": "oiPct",
-            "direction": "both",
-            "minAbsPct": 15,
-            "minOiValue": 10_000_000,
-            "cooldownSec": 1800,
         },
     ]
 
 
 def default_settings() -> dict:
     return {
-        "limit": 60,
+        "limit": 400,
         "intervalSec": 60,
-        "maxPerRound": 5,
+        "maxPerRound": 20,
         "webhookUrl": "",
         "priceChopPct": 0.5,
     }
@@ -69,12 +61,18 @@ def _clean_rule(raw: dict, fallback_id: str) -> dict:
         min_abs = float(raw.get("minAbsPct"))
         min_value = float(raw.get("minOiValue") or 0)
         cooldown = int(raw.get("cooldownSec") or 900)
+        max_value = _optional_positive(raw.get("maxOiValue"))
+        min_price = _optional_positive(raw.get("minPricePct"))
     except (TypeError, ValueError) as exc:
         raise ValueError("阈值或冷却时间不是数字") from exc
     if not 0.1 <= min_abs <= 500:
         raise ValueError("涨跌幅阈值需要在 0.1 到 500 之间")
     if min_value < 0:
         raise ValueError("最小持仓价值不能是负数")
+    if max_value is not None and max_value < min_value:
+        raise ValueError("持仓价值上限不能小于下限")
+    if min_price is not None and min_price > 500:
+        raise ValueError("价格涨幅阈值需要在 0 到 500 之间")
     if not 60 <= cooldown <= 86_400:
         raise ValueError("冷却时间需要在 60 秒到 1 天之间")
     rule_id = str(raw.get("id") or fallback_id).strip()
@@ -88,8 +86,19 @@ def _clean_rule(raw: dict, fallback_id: str) -> dict:
         "direction": direction,
         "minAbsPct": round(min_abs, 4),
         "minOiValue": min_value,
+        "maxOiValue": None if max_value is None else round(max_value, 2),
+        "minPricePct": None if min_price is None else round(min_price, 4),
         "cooldownSec": cooldown,
     }
+
+
+def _optional_positive(raw):
+    if raw in (None, "", 0, "0"):
+        return None
+    value = float(raw)
+    if value <= 0:
+        return None
+    return value
 
 
 def clean_rules(raw) -> list[dict]:
@@ -220,8 +229,17 @@ def compose(row: dict, rule: dict, chop_pct: float = 0.5) -> str | None:
         return None
     if rule["direction"] == "down" and move >= 0:
         return None
-    if float(row.get("oiValue") or 0) < rule["minOiValue"]:
+    oi_value = float(row.get("oiValue") or 0)
+    if oi_value < float(rule.get("minOiValue") or 0):
         return None
+    max_value = rule.get("maxOiValue")
+    if max_value not in (None, "", 0) and oi_value > float(max_value):
+        return None
+    min_price = rule.get("minPricePct")
+    if min_price not in (None, "", 0):
+        price_pct = change.get("pricePct")
+        if price_pct is None or float(price_pct) < float(min_price):
+            return None
     oi_change = change.get("oiPct")
     verdict = judge(oi_change, change.get("pricePct"), chop_pct)
     mark = {"up": "🟢", "down": "🔴"}.get(verdict["bias"], "⚪")

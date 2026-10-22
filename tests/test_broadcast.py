@@ -32,27 +32,55 @@ def row(symbol="BTCUSDT", base="BTC", move=6.5, oi_move=None, price_move=5.2, oi
     }
 
 
+def loose_rule():
+    rule = dict(default_rules()[0])
+    rule["minAbsPct"] = 0.1
+    rule["minOiValue"] = 0
+    rule["maxOiValue"] = None
+    rule["minPricePct"] = None
+    return rule
+
+
+def band_row(**kwargs):
+    values = {"move": 12, "price_move": 6, "oi_value": 7_500_000}
+    values.update(kwargs)
+    return row(**values)
+
+
 class BroadcastTest(unittest.TestCase):
     def test_message_matches_chinese_alert_form(self):
-        text = compose(row(), default_rules()[0])
-        self.assertIn("🟢 [BTCUSDT] 币安未平仓合约量 +6.5%", text)
-        self.assertIn("过去 3600 秒价格上涨 5.2%", text)
-        self.assertIn("未平仓合约量：76.00 亿美元", text)
+        text = compose(band_row(), default_rules()[0])
+        self.assertIn("🟢 [BTCUSDT] 币安未平仓合约量 +12.0%", text)
+        self.assertIn("过去 3600 秒价格上涨 6.0%", text)
+        self.assertIn("未平仓合约量：750 万美元", text)
         self.assertIn("未平仓合约量/市值比率：0.5%", text)
         self.assertIn("24 小时价格变动：-4.2%", text)
         self.assertIn("多头主导，看涨", text)
         body = text.split("] ", 1)[1]
         self.assertNotRegex(body, r"[A-Za-z]")
 
-        small_rule = dict(default_rules()[0])
-        small_rule["minOiValue"] = 0
+        small_rule = loose_rule()
         small = compose(row(oi_value=4_500_000), small_rule)
         self.assertIn("450 万美元", small)
 
+    def test_band_requires_oi_range_quantity_and_price_rise(self):
+        rule = default_rules()[0]
+        self.assertEqual(rule["minAbsPct"], 10)
+        self.assertEqual(rule["minOiValue"], 5_000_000)
+        self.assertEqual(rule["maxOiValue"], 10_000_000)
+        self.assertEqual(rule["minPricePct"], 5)
+        self.assertIsNotNone(compose(band_row(), rule))
+        self.assertIsNotNone(compose(band_row(oi_move=-12), rule))
+        self.assertIsNotNone(compose(band_row(oi_value=5_000_000), rule))
+        self.assertIsNotNone(compose(band_row(oi_value=10_000_000, price_move=5), rule))
+        self.assertIsNone(compose(band_row(move=9.9), rule))
+        self.assertIsNone(compose(band_row(price_move=4.9), rule))
+        self.assertIsNone(compose(band_row(price_move=-6), rule))
+        self.assertIsNone(compose(band_row(oi_value=4_999_999), rule))
+        self.assertIsNone(compose(band_row(oi_value=10_000_001), rule))
+
     def test_five_facts_follow_quantity_not_notional(self):
-        rule = dict(default_rules()[0])
-        rule["minAbsPct"] = 0.1
-        rule["minOiValue"] = 0
+        rule = loose_rule()
         cases = [
             (2, 1, None, "🟢", "多头主导，看涨"),
             (2, -1, None, "🔴", "空头主导，看跌"),
@@ -76,16 +104,17 @@ class BroadcastTest(unittest.TestCase):
     def test_threshold_cooldown_and_cap(self):
         with tempfile.TemporaryDirectory() as directory:
             book = BroadcastBook(Path(directory))
-            quiet = book.evaluate([row(move=1.0)], 1000, now=1_000)
+            quiet = book.evaluate([band_row(move=1.0)], 1000, now=1_000)
             self.assertEqual(quiet, [])
-            first = book.evaluate([row()], 1000, now=1_000)
+            first = book.evaluate([band_row()], 1000, now=1_000)
             self.assertEqual(len(first), 1)
-            self.assertEqual(book.evaluate([row()], 1000, now=1_100), [])
-            self.assertEqual(book.evaluate([row()], 2000, now=1_100), [])
-            again = book.evaluate([row()], 3000, now=1_000 + 901)
+            self.assertEqual(book.evaluate([band_row()], 1000, now=1_100), [])
+            self.assertEqual(book.evaluate([band_row()], 2000, now=1_100), [])
+            again = book.evaluate([band_row()], 3000, now=1_000 + 901)
             self.assertEqual(len(again), 1)
 
-            rows = [row(symbol=f"C{i}USDT", base=f"C{i}", move=20 - i) for i in range(6)]
+            book.settings["maxPerRound"] = 5
+            rows = [band_row(symbol=f"C{i}USDT", base=f"C{i}", move=20 - i) for i in range(6)]
             burst = book.evaluate(rows, 9000, now=5_000)
             self.assertEqual(len(burst), 5)
             self.assertEqual(burst[0]["symbol"], "C0USDT")

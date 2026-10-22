@@ -71,9 +71,13 @@ function renderRules(rules) {
     node("span", { text: `${WINDOW_LABELS[rule.window] || rule.window} · ${rule.metric === "oiPct" ? "持仓量" : "持仓价值"}` }),
     node("span", { text: "绝对值 ≥" }),
     node("input", { type: "number", min: "0.1", max: "500", step: "0.1", value: rule.minAbsPct, "data-field": "minAbsPct" }),
-    node("span", { text: "% ，最小持仓价值" }),
+    node("span", { text: "% ，持仓价值" }),
     node("input", { type: "number", min: "0", step: "100", value: Number(rule.minOiValue || 0) / 10000, "data-field": "minWan" }),
-    node("span", { text: "万 USDT" }),
+    node("span", { text: "到" }),
+    node("input", { type: "number", min: "0", step: "100", value: rule.maxOiValue ? Number(rule.maxOiValue) / 10000 : "", "data-field": "maxWan", placeholder: "不限" }),
+    node("span", { text: "万 USDT，价格涨幅 ≥" }),
+    node("input", { type: "number", min: "0", step: "0.1", value: rule.minPricePct ?? "", "data-field": "minPricePct", placeholder: "不限" }),
+    node("span", { text: "%" }),
     node("select", { "data-field": "direction" }, [
       node("option", { value: "both", text: "双向", selected: rule.direction === "both" ? "selected" : null }),
       node("option", { value: "up", text: "只播增加", selected: rule.direction === "up" ? "selected" : null }),
@@ -81,6 +85,13 @@ function renderRules(rules) {
     ]),
     node("button", { type: "button", text: "保存", "data-id": rule.id, onclick: () => saveRule(rule) }),
   ])));
+}
+
+function blankToNull(raw, scale) {
+  if (raw == null || String(raw).trim() === "") return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value * scale;
 }
 
 function rowOf(id) {
@@ -94,6 +105,8 @@ async function saveRule(rule) {
     enabled: row.querySelector('[data-field="enabled"]').checked,
     minAbsPct: Number(row.querySelector('[data-field="minAbsPct"]').value),
     minOiValue: Number(row.querySelector('[data-field="minWan"]').value) * 10000,
+    maxOiValue: blankToNull(row.querySelector('[data-field="maxWan"]').value, 10000),
+    minPricePct: blankToNull(row.querySelector('[data-field="minPricePct"]').value, 1),
     direction: row.querySelector('[data-field="direction"]').value,
   };
   const current = await (await fetch("/api/broadcasts")).json();
@@ -123,7 +136,7 @@ async function poll() {
     renderFeed(items);
     feedKey = key;
   }
-  const ruleIds = (payload.rules || []).map((rule) => `${rule.id}:${rule.minAbsPct}:${rule.direction}:${rule.enabled}`).join("|");
+  const ruleIds = (payload.rules || []).map((rule) => `${rule.id}:${rule.minAbsPct}:${rule.maxOiValue}:${rule.minPricePct}:${rule.direction}:${rule.enabled}`).join("|");
   if (ruleIds !== rulesKey) {
     renderRules(payload.rules || []);
     rulesKey = ruleIds;
