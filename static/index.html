@@ -33,7 +33,7 @@
     <div class="rule chop-row">
       <span>价格震荡带</span>
       <input id="chopPct" type="number" min="0.05" max="20" step="0.05" value="0.5">
-      <span>% 以内算价格没动。判断用未平仓合约数量，不用未平仓金额。</span>
+      <span>% 以内算价格没动。10% 和 5% 看未平仓金额涨跌。</span>
       <button type="button" id="saveChop">保存震荡带</button>
     </div>
   </section>
@@ -127,7 +127,7 @@
     <span id="count" class="meta"></span>
   </section>
 
-  <p class="note">监测的是未平仓合约，不是币的持有数量。门槛随未平仓金额降低：500万到1000万要未平仓合约数量变动 10%，1000万到1500万要 5%，1500万以上要 5%。未到 500 万不播。未平仓涨且价格涨：优先推报，做多。未平仓涨且价格跌或平：可能为出货、洗盘或蓄力。未平仓跌且价格跌：弃盘行情，需观望。未平仓跌且价格涨：需观望。60 分钟内未平仓金额翻倍是最高级别。未平仓金额跨过 2000 万单独提醒，庄家常在此离场或加速拉升。</p>
+  <p class="note">监测的是未平仓合约，不是币的持有数量。10% 和 5% 看的是未平仓金额涨跌：500万到1000万要金额变动 10%，1000万到1500万要 5%，1500万以上要 5%。未到 500 万不播。未平仓金额涨且价格涨：优先推报，做多。未平仓金额涨且价格跌或平：可能为出货、洗盘或蓄力。未平仓金额跌且价格跌：弃盘行情，需观望。未平仓金额跌且价格涨：需观望。60 分钟内未平仓金额翻倍是最高级别。未平仓金额跨过 2000 万单独提醒，庄家常在此离场或加速拉升。</p>
 
   <div class="table-wrap">
     <table>
@@ -140,8 +140,8 @@
           <th class="num" data-sort="oiValue" title="未平仓合约的 USDT 金额 sumOpenInterestValue，不是持有市值">未平仓金额</th>
           <th class="num" data-sort="scale5m" title="5分钟前的未平仓金额是 A，现在是 B。刻度是 B 减 A，不是持有数量">5分钟刻度</th>
           <th class="num" id="valueSort" data-sort="oiValue:1h" title="未平仓金额相对所选窗口的涨跌幅">金额涨跌 · 1小时</th>
-          <th class="num" id="oiSort" data-sort="oi:1h" title="未平仓合约数量相对所选窗口的涨跌幅，不含价格">未平仓涨跌 · 1小时</th>
-          <th id="factSort" title="用未平仓合约数量和同一窗口的价格变化判断">事实 · 1小时</th>
+          <th class="num" id="oiSort" data-sort="oi:1h" title="未平仓合约数量涨跌，只作对照。10% 和 5% 不看这一列">数量涨跌 · 1小时</th>
+          <th id="factSort" title="用未平仓金额涨跌和同一窗口的价格变化判断">事实 · 1小时</th>
           <th class="num" data-sort="marketCap">市值</th>
           <th class="num" data-sort="oiToMarketCapPct" title="未平仓金额除以市值">OI/市值</th>
           <th class="num" data-sort="quoteVolume">24h成交额</th>

@@ -290,8 +290,8 @@ function changeCell(row, field) {
   const value = item[field];
   const delta = field === "oiPct" ? item.oiDelta : item.oiValueDelta;
   const tip = field === "oiValuePct"
-    ? `同窗口隐含价格 ${pct(item.pricePct)}。未平仓金额同时包含未平仓合约数量和价格。`
-    : "只比较未平仓合约数量，不是持有数量，也不包含价格涨跌。";
+    ? "10% 和 5% 看的是未平仓金额涨跌。"
+    : "未平仓合约数量涨跌，只作对照。门槛不看这一列。";
   return el("div", { class: "stack", title: tip }, [
     el("span", { class: `primary pill ${tone(value)}`, text: pct(value) }),
     el("span", { class: "sub", text: signedCompact(delta, field === "oiPct") }),
@@ -423,7 +423,7 @@ function renderChrome() {
   valueHeader.textContent = `金额涨跌 · ${windowLabel(state.window)}`;
   const factHeader = $("#factSort");
   if (factHeader) factHeader.textContent = `事实 · ${windowLabel(state.window)}`;
-  oiHeader.textContent = `未平仓涨跌 · ${windowLabel(state.window)}`;
+  oiHeader.textContent = `数量涨跌 · ${windowLabel(state.window)}`;
   document.querySelectorAll("#windows button").forEach((button) => {
     button.classList.toggle("active", button.dataset.window === state.window);
   });

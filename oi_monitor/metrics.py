@@ -172,7 +172,7 @@ FACTS = {
 
 
 def oi_move_threshold(oi_value: float) -> float | None:
-    """OI-quantity percent gate. It steps down as the USDT open interest grows."""
+    """USDT open-interest percent gate. It steps down as the notional grows."""
     if oi_value < 5_000_000:
         return None
     if oi_value <= 10_000_000:
@@ -183,7 +183,7 @@ def oi_move_threshold(oi_value: float) -> float | None:
 
 
 def judge(oi_pct, price_pct, chop_pct: float = 0.5) -> dict:
-    """Four OI-and-price forms. Quantity moves, not USDT notional."""
+    """Four forms. The open-interest side is the USDT notional percent."""
     chop = abs(float(chop_pct))
     if oi_pct is None:
         return {"code": "no-oi", "text": "未平仓合约缺失，暂不判断", "oiSide": None, "priceSide": None, "bias": "flat"}
@@ -202,9 +202,9 @@ def judge(oi_pct, price_pct, chop_pct: float = 0.5) -> dict:
     return {"code": code, "text": text, "oiSide": oi_side, "priceSide": price_side, "bias": bias}
 
 
-def screen_change(oi_value, oi_pct, price_pct, oi_value_delta, chop_pct: float = 0.5) -> dict:
-    """Apply the tiered gate, the 20M watershed, and the short-term doubling alert."""
-    verdict = judge(oi_pct, price_pct, chop_pct)
+def screen_change(oi_value, oi_value_pct, price_pct, oi_value_delta, chop_pct: float = 0.5) -> dict:
+    """Apply the tiered notional-percent gate, the 20M watershed, and the doubling alert."""
+    verdict = judge(oi_value_pct, price_pct, chop_pct)
     current = None if oi_value is None else float(oi_value)
     previous = None
     if current is not None and oi_value_delta is not None:
@@ -212,13 +212,13 @@ def screen_change(oi_value, oi_pct, price_pct, oi_value_delta, chop_pct: float =
     doubled = bool(previous and previous > 0 and current is not None and current >= 5_000_000 and current >= previous * 2)
     watershed = bool(previous is not None and current is not None and previous < 20_000_000 <= current)
     threshold = None if current is None else oi_move_threshold(current)
-    moved = oi_pct is not None and threshold is not None and abs(oi_pct) >= threshold
+    moved = oi_value_pct is not None and threshold is not None and abs(oi_value_pct) >= threshold
     qualified = bool(moved or doubled or watershed)
     fact = verdict["text"]
     if qualified and doubled:
         shown = f"最高级别。{fact}"
     elif qualified and watershed:
-        shown = f"{fact}。未平仓合约量达到2000万关键分水岭"
+        shown = f"{fact}。未平仓金额达到2000万关键分水岭"
     elif qualified:
         shown = fact
     else:
@@ -242,7 +242,7 @@ def attach_reads(rows: list[dict], chop_pct: float) -> list[dict]:
         item["reads"] = {
             name: screen_change(
                 row.get("oiValue"),
-                change.get("oiPct"),
+                change.get("oiValuePct"),
                 change.get("pricePct"),
                 change.get("oiValueDelta"),
                 chop_pct,

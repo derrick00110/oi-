@@ -132,7 +132,7 @@ def print_table(payload: dict, sort_key: str) -> None:
             pct_text(changes["24h"]["oiValuePct"]),
             pct_text(changes["1h"]["oiPct"]),
             pct_text(changes["24h"]["oiPct"]),
-            screen_change(row["oiValue"], changes["1h"]["oiPct"], changes["1h"]["pricePct"], changes["1h"].get("oiValueDelta"), BOOK.settings.get("priceChopPct") or 0.5)["text"],
+            screen_change(row["oiValue"], changes["1h"]["oiValuePct"], changes["1h"]["pricePct"], changes["1h"].get("oiValueDelta"), BOOK.settings.get("priceChopPct") or 0.5)["text"],
             compact_cn(row["marketCap"]),
             pct_text(row["oiToMarketCapPct"]),
         ]
@@ -351,7 +351,7 @@ def serve(host: str, port: int) -> None:
     LOOP.start()
     shown = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     print(f"oi事实监测播报已启动： http://{shown}:{port}")
-    print("按未平仓合约数量和价格判断。不会自动下单。按 Ctrl+C 结束。")
+    print("按未平仓金额涨跌和价格判断。不会自动下单。按 Ctrl+C 结束。")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -362,7 +362,7 @@ def serve(host: str, port: int) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="oi事实监测播报：用币安 U 本位公开未平仓合约和价格判断")
+    parser = argparse.ArgumentParser(description="oi事实监测播报：用币安 U 本位未平仓金额涨跌和价格判断")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--once", action="store_true", help="扫描一次并打印，不启动网页")

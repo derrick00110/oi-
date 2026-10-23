@@ -10,10 +10,10 @@ from oi_monitor.trading import TradingDesk, sign_query
 from oi_monitor.client import BinanceError
 
 
-def row(symbol="BTCUSDT", base="BTC", move=6.5, oi_move=None, price_move=5.2, oi_value=7_600_000_000, funding=None, value_delta=460_000_000):
+def row(symbol="BTCUSDT", base="BTC", move=6.5, oi_move=None, value_move=None, price_move=5.2, oi_value=7_600_000_000, funding=None, value_delta=460_000_000):
     change = {
         "oiPct": move if oi_move is None else oi_move,
-        "oiValuePct": move,
+        "oiValuePct": move if value_move is None else value_move,
         "oiDelta": 1000,
         "oiValueDelta": value_delta,
         "pricePct": price_move,
@@ -51,10 +51,11 @@ def band_row(**kwargs):
 class BroadcastTest(unittest.TestCase):
     def test_message_matches_chinese_alert_form(self):
         text = compose(band_row(), default_rules()[0])
-        self.assertIn("🟢 [BTCUSDT] 币安未平仓合约量 +12.0%", text)
+        self.assertEqual(default_rules()[0]["metric"], "oiValuePct")
+        self.assertIn("🟢 [BTCUSDT] 币安未平仓金额 +12.0%", text)
         self.assertIn("过去 3600 秒价格上涨 6.0%", text)
-        self.assertIn("未平仓合约量：750 万美元", text)
-        self.assertIn("未平仓合约量/市值比率：0.5%", text)
+        self.assertIn("未平仓金额：750 万美元", text)
+        self.assertIn("未平仓金额/市值比率：0.5%", text)
         self.assertIn("24 小时价格变动：-4.2%", text)
         self.assertIn("优先推报，做多信号", text)
         body = text.split("] ", 1)[1]
@@ -70,9 +71,10 @@ class BroadcastTest(unittest.TestCase):
         self.assertIn("优先推报，做多信号", compose(band_row(), rule))
         self.assertIn("可能为出货、洗盘或蓄力", compose(band_row(price_move=-3), rule))
         self.assertIn("可能为出货、洗盘或蓄力", compose(band_row(price_move=0.1), rule))
-        self.assertIn("弃盘行情，需观望", compose(band_row(oi_move=-12, price_move=-3), rule))
-        self.assertIn("未平仓减少、价格上涨，需观望", compose(band_row(oi_move=-12, price_move=3), rule))
+        self.assertIn("弃盘行情，需观望", compose(band_row(value_move=-12, price_move=-3), rule))
+        self.assertIn("未平仓减少、价格上涨，需观望", compose(band_row(value_move=-12, price_move=3), rule))
         self.assertIsNone(compose(band_row(move=9.9), rule))
+        self.assertIsNone(compose(band_row(move=2, oi_move=20), rule))
         self.assertIsNone(compose(band_row(oi_value=4_000_000), rule))
         self.assertIn("优先推报，做多信号", compose(band_row(oi_value=12_000_000, move=5), rule))
         self.assertIsNone(compose(band_row(oi_value=12_000_000, move=4.9), rule))
@@ -87,7 +89,7 @@ class BroadcastTest(unittest.TestCase):
         crossed = compose(band_row(oi_value=20_100_000, value_delta=500_000, move=2.5, price_move=1), rule)
         self.assertIn("2000万关键分水岭", crossed)
 
-    def test_five_facts_follow_quantity_not_notional(self):
+    def test_forms_follow_notional_not_quantity(self):
         rule = loose_rule()
         cases = [
             (2, 1, None, "🟢", "优先推报，做多信号"),
@@ -97,17 +99,16 @@ class BroadcastTest(unittest.TestCase):
             (-2, -1, None, "⚪", "弃盘行情，需观望"),
             (-2, 0.1, -0.00025, "⚪", "未平仓减少、价格持平，需观望"),
         ]
-        for oi_move, price_move, funding, mark, fact in cases:
-            text = compose(row(oi_move=oi_move, price_move=price_move, funding=funding), rule, 0.5)
+        for value_move, price_move, funding, mark, fact in cases:
+            text = compose(row(value_move=value_move, oi_move=-value_move, price_move=price_move, funding=funding), rule, 0.5)
             self.assertTrue(text.startswith(mark), text)
             self.assertIn(fact, text)
 
         disguised = row(move=8, oi_move=-3, price_move=4)
-        value_rule = dict(rule)
-        value_rule["metric"] = "oiValuePct"
-        text = compose(disguised, value_rule, 0.5)
-        self.assertIn("未平仓减少、价格上涨，需观望", text)
-        self.assertNotIn("优先推报", text)
+        text = compose(disguised, rule, 0.5)
+        self.assertIn("币安未平仓金额 +8.0%", text)
+        self.assertIn("优先推报，做多信号", text)
+        self.assertNotIn("未平仓减少", text)
 
     def test_threshold_cooldown_and_cap(self):
         with tempfile.TemporaryDirectory() as directory:

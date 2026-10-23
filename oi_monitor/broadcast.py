@@ -24,7 +24,7 @@ def default_rules() -> list[dict]:
             "id": "oi-dynamic",
             "enabled": True,
             "window": "1h",
-            "metric": "oiPct",
+            "metric": "oiValuePct",
             "direction": "both",
             "minAbsPct": 10,
             "minOiValue": 5_000_000,
@@ -79,6 +79,9 @@ def _clean_rule(raw: dict, fallback_id: str) -> dict:
     rule_id = str(raw.get("id") or fallback_id).strip()
     if not rule_id or len(rule_id) > 40:
         raise ValueError("规则编号无效")
+    dynamic = bool(raw.get("dynamic", False))
+    if dynamic:
+        metric = "oiValuePct"
     return {
         "id": rule_id,
         "enabled": bool(raw.get("enabled", True)),
@@ -89,7 +92,7 @@ def _clean_rule(raw: dict, fallback_id: str) -> dict:
         "minOiValue": min_value,
         "maxOiValue": None if max_value is None else round(max_value, 2),
         "minPricePct": None if min_price is None else round(min_price, 4),
-        "dynamic": bool(raw.get("dynamic", False)),
+        "dynamic": dynamic,
         "cooldownSec": cooldown,
     }
 
@@ -226,10 +229,10 @@ def _sentence(row: dict, rule: dict, change: dict, conclusion: str, mark: str) -
     ratio = "暂无" if row.get("oiToMarketCapPct") is None else f"{row['oiToMarketCapPct']:.1f}%"
     symbol = row.get("symbol") or row.get("base")
     return (
-        f"{mark} [{symbol}] 币安未平仓合约量 {signed_pct(change.get('oiPct'))}，"
+        f"{mark} [{symbol}] 币安未平仓金额 {signed_pct(change.get('oiValuePct'))}，"
         f"{price_phrase(WINDOW_SECONDS[rule['window']], change.get('pricePct'))}，"
-        f"未平仓合约量：{usd_text(row.get('oiValue'))}，"
-        f"未平仓合约量/市值比率：{ratio}，"
+        f"未平仓金额：{usd_text(row.get('oiValue'))}，"
+        f"未平仓金额/市值比率：{ratio}，"
         f"24 小时价格变动：{signed_pct(row.get('priceChangePercent'))}。"
         f"{conclusion}"
     )
@@ -240,7 +243,7 @@ def describe(row: dict, rule: dict, chop_pct: float = 0.5) -> dict | None:
     if rule.get("dynamic"):
         screened = screen_change(
             row.get("oiValue"),
-            change.get("oiPct"),
+            change.get("oiValuePct"),
             change.get("pricePct"),
             change.get("oiValueDelta"),
             chop_pct,
@@ -254,20 +257,20 @@ def describe(row: dict, rule: dict, chop_pct: float = 0.5) -> dict | None:
                 f"未平仓金额从 {usd_text(screened['previous'])} 增至 {usd_text(row.get('oiValue'))}，短时间翻倍"
             )
         if screened["watershed"]:
-            notes.append("未平仓合约量达到2000万关键分水岭，庄家常在此离场或加速拉升")
+            notes.append("未平仓金额达到2000万关键分水岭，庄家常在此离场或加速拉升")
         notes.append(screened["fact"])
         mark = "🟢" if screened["doubled"] or screened["code"] == "long" else "⚪"
         rank = 3 if screened["doubled"] else (2 if screened["code"] == "long" else 1)
         return {
             "text": _sentence(row, rule, change, "。".join(notes), mark),
-            "move": change.get("oiPct") or 0,
+            "move": change.get("oiValuePct") or 0,
             "rank": rank,
             "fact": screened["fact"],
         }
     text = _compose_fixed(row, rule, chop_pct, change)
     if text is None:
         return None
-    return {"text": text, "move": change.get(rule["metric"]) or 0, "rank": 1, "fact": judge(change.get("oiPct"), change.get("pricePct"), chop_pct)["text"]}
+    return {"text": text, "move": change.get(rule["metric"]) or 0, "rank": 1, "fact": judge(change.get("oiValuePct"), change.get("pricePct"), chop_pct)["text"]}
 
 
 def compose(row: dict, rule: dict, chop_pct: float = 0.5) -> str | None:
@@ -295,8 +298,7 @@ def _compose_fixed(row: dict, rule: dict, chop_pct: float, change: dict | None =
         price_pct = change.get("pricePct")
         if price_pct is None or float(price_pct) < float(min_price):
             return None
-    oi_change = change.get("oiPct")
-    verdict = judge(oi_change, change.get("pricePct"), chop_pct)
+    verdict = judge(change.get("oiValuePct"), change.get("pricePct"), chop_pct)
     mark = "🟢" if verdict["code"] == "long" else "⚪"
     return _sentence(row, rule, change, verdict["text"], mark)
 
