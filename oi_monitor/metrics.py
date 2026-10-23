@@ -174,7 +174,7 @@ FACTS = {
 def oi_move_threshold(oi_value: float) -> float | None:
     """USDT open-interest percent gate. It steps down as the notional grows."""
     if oi_value < 5_000_000:
-        return None
+        return 15.0
     if oi_value <= 10_000_000:
         return 10.0
     if oi_value <= 15_000_000:

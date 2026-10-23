@@ -27,7 +27,7 @@ def default_rules() -> list[dict]:
             "metric": "oiValuePct",
             "direction": "both",
             "minAbsPct": 10,
-            "minOiValue": 5_000_000,
+            "minOiValue": 0,
             "maxOiValue": None,
             "minPricePct": None,
             "dynamic": True,

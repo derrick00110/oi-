@@ -290,7 +290,7 @@ function changeCell(row, field) {
   const value = item[field];
   const delta = field === "oiPct" ? item.oiDelta : item.oiValueDelta;
   const tip = field === "oiValuePct"
-    ? "10% 和 5% 看的是未平仓金额涨跌。"
+    ? "15%、10% 和 5% 看的是未平仓金额涨跌。"
     : "未平仓合约数量涨跌，只作对照。门槛不看这一列。";
   return el("div", { class: "stack", title: tip }, [
     el("span", { class: `primary pill ${tone(value)}`, text: pct(value) }),
