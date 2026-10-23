@@ -62,6 +62,28 @@ class MetricsTest(unittest.TestCase):
         self.assertIsNone(changes["15m"]["oiPct"])
         self.assertIsNone(changes["24h"]["oiValuePct"])
 
+    def test_five_minute_scale_is_latest_minus_previous(self):
+        step = 5 * 60 * 1000
+        start = 1_700_000_000_000
+        series = []
+        for index in range(40):
+            series.append(
+                {
+                    "timestamp": start + index * step,
+                    "oi": 1000 + index,
+                    "oiValue": 5_000_000,
+                    "supply": 1,
+                }
+            )
+        series[-2]["oiValue"] = 5_200_000
+        series[-1]["oiValue"] = 6_300_000
+        series[-2]["oi"] = 500
+        series[-1]["oi"] = 520
+        change = changes_for(series)["5m"]
+        self.assertAlmostEqual(change["oiValueDelta"], 1_100_000)
+        self.assertAlmostEqual(change["oiDelta"], 20)
+        self.assertEqual(series[-1]["oiValue"] - series[-2]["oiValue"], change["oiValueDelta"])
+
     def test_normalize_sorts_and_keeps_latest_duplicate(self):
         raw = [
             {

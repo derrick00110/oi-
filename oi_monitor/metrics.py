@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-BAR_MINUTES = 15
+BAR_MINUTES = 5
 WINDOWS = (
+    ("5m", 5),
     ("15m", 15),
     ("1h", 60),
     ("4h", 240),

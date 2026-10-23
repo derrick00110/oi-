@@ -12,8 +12,8 @@ from oi_monitor.metrics import build_row, index_premium, index_tickers, normaliz
 
 log = logging.getLogger("oi-monitor")
 
-HIST_LIMIT = 100
-HIST_PERIOD = "15m"
+HIST_LIMIT = 300
+HIST_PERIOD = "5m"
 
 
 class Monitor:

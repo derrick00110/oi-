@@ -1,4 +1,5 @@
 const WINDOWS = [
+  { id: "5m", label: "5分钟" },
   { id: "15m", label: "15分钟" },
   { id: "1h", label: "1小时" },
   { id: "4h", label: "4小时" },
@@ -130,6 +131,7 @@ function lagText(ms) {
 }
 
 function sortValue(row, key) {
+  if (key === "scale5m") return row.changes["5m"]?.oiValueDelta;
   if (key.includes(":")) {
     const [field, windowId] = key.split(":");
     const item = row.changes[windowId] || {};
@@ -300,11 +302,11 @@ function changeCell(row, field) {
 function renderTable(rows) {
   const body = $("#rows");
   if (!state.data) {
-    body.replaceChildren(el("tr", {}, [el("td", { class: "empty", colspan: "12", text: state.loading ? "正在扫描币安合约持仓…" : "等待数据" })]));
+    body.replaceChildren(el("tr", {}, [el("td", { class: "empty", colspan: "13", text: state.loading ? "正在扫描币安合约持仓…" : "等待数据" })]));
     return;
   }
   if (!rows.length) {
-    body.replaceChildren(el("tr", {}, [el("td", { class: "empty", colspan: "12", text: "没有符合筛选条件的合约" })]));
+    body.replaceChildren(el("tr", {}, [el("td", { class: "empty", colspan: "13", text: "没有符合筛选条件的合约" })]));
     return;
   }
   const fragment = document.createDocumentFragment();
@@ -328,6 +330,7 @@ function renderTable(rows) {
       el("td", { class: `num ${tone(row.priceChangePercent)}`, text: pct(row.priceChangePercent) }),
       el("td", { class: "num", text: qty(row.oi) }),
       el("td", { class: "num", text: compact(row.oiValue) }),
+      el("td", { class: "num" }, [scaleCell(row)]),
       el("td", { class: "num" }, [changeCell(row, "oiValuePct")]),
       el("td", { class: "num" }, [changeCell(row, "oiPct")]),
       el("td", { class: `fact ${tone(readTone(row))}`, text: readText(row) }),
@@ -365,6 +368,17 @@ function fundingText(rate) {
   return `${sign}${percent.toFixed(4)}% · ${who}`;
 }
 
+function scaleCell(row) {
+  const change = row.changes["5m"] || {};
+  const delta = change.oiValueDelta;
+  const before = delta == null ? null : row.oiValue - delta;
+  const span = before == null ? "暂无 5 分钟点" : `${compact(before)} → ${compact(row.oiValue)}`;
+  return el("div", { class: "stack", title: "A 是 5 分钟前的持仓价值，B 是现在的持仓价值，刻度是 B 减 A" }, [
+    el("span", { class: `primary pill ${tone(delta)}`, text: delta == null ? "—" : signedCompact(delta) }),
+    el("span", { class: "sub", text: span }),
+  ]);
+}
+
 function metricLine(label, value, extra, toneValue) {
   return el("div", { class: "metric" }, [
     el("span", { class: "sub", text: label }),
@@ -392,7 +406,7 @@ function detailRow(row) {
     metricLine("资金费率", fundingText(row.fundingRate)),
     metricLine("事实", readText(row), "", readTone(row)),
   ]));
-  return el("tr", {}, [el("td", { class: "detail-cell", colspan: "12" }, [el("div", { class: "detail" }, panels)])]);
+  return el("tr", {}, [el("td", { class: "detail-cell", colspan: "13" }, [el("div", { class: "detail" }, panels)])]);
 }
 
 function renderChrome() {

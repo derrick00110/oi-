@@ -88,6 +88,7 @@
     </label>
     <div class="windows" id="windows" role="group" aria-label="涨跌幅窗口">
       <span class="group-label">窗口</span>
+      <button type="button" data-window="5m">5分钟</button>
       <button type="button" data-window="15m">15分钟</button>
       <button type="button" data-window="1h" class="active">1小时</button>
       <button type="button" data-window="4h">4小时</button>
@@ -137,6 +138,7 @@
           <th class="num" data-sort="priceChangePercent">价格24h</th>
           <th class="num" data-sort="oi" title="当前持仓的币数量，sumOpenInterest">持仓量</th>
           <th class="num" data-sort="oiValue" title="当前持仓的 USDT 名义价值，sumOpenInterestValue">持仓价值</th>
+          <th class="num" data-sort="scale5m" title="5分钟前的持仓价值是 A，现在是 B。这一列是 B 减 A">5分钟刻度</th>
           <th class="num" id="valueSort" data-sort="oiValue:1h" title="持仓价值相对所选窗口的涨跌幅">价值涨跌 · 1小时</th>
           <th class="num" id="oiSort" data-sort="oi:1h" title="持仓币数相对所选窗口的涨跌幅，不含价格">数量涨跌 · 1小时</th>
           <th id="factSort" title="用持仓数量和同一窗口的价格变化判断">事实 · 1小时</th>
@@ -151,7 +153,7 @@
   </div>
 
   <footer>
-    数据来自币安 U 本位公开接口：持仓历史、24 小时行情，以及一次取完全市场的资金费率。大约每 15 分钟一个持仓点。不会自动下单。指数合约没有流通量时，市值说「暂无」。
+    数据来自币安 U 本位公开接口：持仓历史、24 小时行情，以及一次取完全市场的资金费率。持仓大约每 5 分钟一个点。5 分钟刻度是现在的持仓价值减去 5 分钟前的持仓价值。不会自动下单。指数合约没有流通量时，市值说「暂无」。
   </footer>
   <script src="/app.js"></script>
   <script src="/broadcast.js"></script>
