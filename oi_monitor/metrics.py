@@ -177,7 +177,7 @@ def oi_move_threshold(oi_value: float) -> float | None:
     if oi_value <= 10_000_000:
         return 10.0
     if oi_value <= 15_000_000:
-        return 7.0
+        return 5.0
     return 5.0
 
 

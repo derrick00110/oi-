@@ -74,8 +74,8 @@ class BroadcastTest(unittest.TestCase):
         self.assertIn("持仓减少、价格上涨，需观望", compose(band_row(oi_move=-12, price_move=3), rule))
         self.assertIsNone(compose(band_row(move=9.9), rule))
         self.assertIsNone(compose(band_row(oi_value=4_000_000), rule))
-        self.assertIn("优先推报，做多信号", compose(band_row(oi_value=12_000_000, move=7), rule))
-        self.assertIsNone(compose(band_row(oi_value=12_000_000, move=6.9), rule))
+        self.assertIn("优先推报，做多信号", compose(band_row(oi_value=12_000_000, move=5), rule))
+        self.assertIsNone(compose(band_row(oi_value=12_000_000, move=4.9), rule))
         self.assertIn("优先推报，做多信号", compose(band_row(oi_value=18_000_000, move=5), rule))
         self.assertIsNone(compose(band_row(oi_value=18_000_000, move=4.9), rule))
 

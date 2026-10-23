@@ -118,7 +118,8 @@ class MetricsTest(unittest.TestCase):
         self.assertIsNone(oi_move_threshold(4_000_000))
         self.assertEqual(oi_move_threshold(5_000_000), 10)
         self.assertEqual(oi_move_threshold(10_000_000), 10)
-        self.assertEqual(oi_move_threshold(10_000_001), 7)
+        self.assertEqual(oi_move_threshold(10_000_001), 5)
+        self.assertEqual(oi_move_threshold(15_000_000), 5)
         self.assertEqual(oi_move_threshold(15_000_001), 5)
         self.assertEqual(oi_move_threshold(30_000_000), 5)
 
