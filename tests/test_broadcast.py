@@ -71,7 +71,7 @@ class BroadcastTest(unittest.TestCase):
         self.assertIn("可能为出货、洗盘或蓄力", compose(band_row(price_move=-3), rule))
         self.assertIn("可能为出货、洗盘或蓄力", compose(band_row(price_move=0.1), rule))
         self.assertIn("弃盘行情，需观望", compose(band_row(oi_move=-12, price_move=-3), rule))
-        self.assertIn("持仓减少、价格上涨，需观望", compose(band_row(oi_move=-12, price_move=3), rule))
+        self.assertIn("未平仓减少、价格上涨，需观望", compose(band_row(oi_move=-12, price_move=3), rule))
         self.assertIsNone(compose(band_row(move=9.9), rule))
         self.assertIsNone(compose(band_row(oi_value=4_000_000), rule))
         self.assertIn("优先推报，做多信号", compose(band_row(oi_value=12_000_000, move=5), rule))
@@ -93,9 +93,9 @@ class BroadcastTest(unittest.TestCase):
             (2, 1, None, "🟢", "优先推报，做多信号"),
             (2, -1, None, "⚪", "可能为出货、洗盘或蓄力"),
             (2, 0.1, 0.0001, "⚪", "可能为出货、洗盘或蓄力"),
-            (-2, 1, None, "⚪", "持仓减少、价格上涨，需观望"),
+            (-2, 1, None, "⚪", "未平仓减少、价格上涨，需观望"),
             (-2, -1, None, "⚪", "弃盘行情，需观望"),
-            (-2, 0.1, -0.00025, "⚪", "持仓减少、价格持平，需观望"),
+            (-2, 0.1, -0.00025, "⚪", "未平仓减少、价格持平，需观望"),
         ]
         for oi_move, price_move, funding, mark, fact in cases:
             text = compose(row(oi_move=oi_move, price_move=price_move, funding=funding), rule, 0.5)
@@ -106,7 +106,7 @@ class BroadcastTest(unittest.TestCase):
         value_rule = dict(rule)
         value_rule["metric"] = "oiValuePct"
         text = compose(disguised, value_rule, 0.5)
-        self.assertIn("持仓减少、价格上涨，需观望", text)
+        self.assertIn("未平仓减少、价格上涨，需观望", text)
         self.assertNotIn("优先推报", text)
 
     def test_threshold_cooldown_and_cap(self):

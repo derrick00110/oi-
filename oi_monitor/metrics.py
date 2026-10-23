@@ -165,9 +165,9 @@ FACTS = {
     ("up", "up"): ("long", "优先推报，做多信号", "up"),
     ("up", "down"): ("wash", "可能为出货、洗盘或蓄力", "flat"),
     ("up", "chop"): ("wash", "可能为出货、洗盘或蓄力", "flat"),
-    ("down", "up"): ("watch-up", "持仓减少、价格上涨，需观望", "flat"),
+    ("down", "up"): ("watch-up", "未平仓减少、价格上涨，需观望", "flat"),
     ("down", "down"): ("abandon", "弃盘行情，需观望", "flat"),
-    ("down", "chop"): ("watch-flat", "持仓减少、价格持平，需观望", "flat"),
+    ("down", "chop"): ("watch-flat", "未平仓减少、价格持平，需观望", "flat"),
 }
 
 
@@ -186,9 +186,9 @@ def judge(oi_pct, price_pct, chop_pct: float = 0.5) -> dict:
     """Four OI-and-price forms. Quantity moves, not USDT notional."""
     chop = abs(float(chop_pct))
     if oi_pct is None:
-        return {"code": "no-oi", "text": "持仓数量缺失，暂不判断", "oiSide": None, "priceSide": None, "bias": "flat"}
+        return {"code": "no-oi", "text": "未平仓合约缺失，暂不判断", "oiSide": None, "priceSide": None, "bias": "flat"}
     if oi_pct == 0:
-        return {"code": "oi-flat", "text": "持仓数量没有变化，暂不判断", "oiSide": "flat", "priceSide": None, "bias": "flat"}
+        return {"code": "oi-flat", "text": "未平仓合约没有变化，暂不判断", "oiSide": "flat", "priceSide": None, "bias": "flat"}
     oi_side = "up" if oi_pct > 0 else "down"
     if price_pct is None:
         return {"code": "no-price", "text": "价格缺失，暂不判断", "oiSide": oi_side, "priceSide": None, "bias": "flat"}

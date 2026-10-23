@@ -129,7 +129,7 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(judge(1, 1)["text"], "优先推报，做多信号")
         self.assertEqual(judge(1, -1)["text"], "可能为出货、洗盘或蓄力")
         self.assertEqual(judge(1, 0.2)["text"], "可能为出货、洗盘或蓄力")
-        self.assertEqual(judge(-1, 1)["text"], "持仓减少、价格上涨，需观望")
+        self.assertEqual(judge(-1, 1)["text"], "未平仓减少、价格上涨，需观望")
         self.assertEqual(judge(-1, -1)["text"], "弃盘行情，需观望")
         self.assertEqual(judge(1, 0.5)["code"], "long")
         self.assertEqual(judge(1, 0.49)["code"], "wash")

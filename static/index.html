@@ -12,7 +12,7 @@
       <span class="mark">播</span>
       <div>
         <h1>oi事实监测播报</h1>
-        <p>持仓数量和价格一起看。公开行情，不需要币安 API Key。下单要单独确认。</p>
+        <p>看未平仓合约和价格，不看持有数量。公开行情，不需要币安 API Key。下单要单独确认。</p>
       </div>
     </div>
     <div class="top-actions">
@@ -33,7 +33,7 @@
     <div class="rule chop-row">
       <span>价格震荡带</span>
       <input id="chopPct" type="number" min="0.05" max="20" step="0.05" value="0.5">
-      <span>% 以内算价格没动。判断用持仓数量，不用持仓价值。</span>
+      <span>% 以内算价格没动。判断用未平仓合约数量，不用未平仓金额。</span>
       <button type="button" id="saveChop">保存震荡带</button>
     </div>
   </section>
@@ -97,20 +97,20 @@
     <label>方向
       <select id="only">
         <option value="all">全部</option>
-        <option value="up">只看价值增加</option>
-        <option value="down">只看价值减少</option>
+        <option value="up">只看未平仓金额增加</option>
+        <option value="down">只看未平仓金额减少</option>
         <option value="hot">只看异动</option>
         <option value="long">优先推报，做多</option>
         <option value="wash">出货、洗盘或蓄力</option>
         <option value="abandon">弃盘行情</option>
-        <option value="watch-up">持仓减少、价格上涨</option>
+        <option value="watch-up">未平仓减少、价格上涨</option>
       </select>
     </label>
     <label>异动
       <input id="hotPct" type="number" min="0.5" max="100" step="0.5" value="5">
       <span class="suffix">%</span>
     </label>
-    <label>持仓价值
+    <label>未平仓金额
       <select id="minOi">
         <option value="0">不限</option>
         <option value="10000000">≥ 1000万</option>
@@ -127,7 +127,7 @@
     <span id="count" class="meta"></span>
   </section>
 
-  <p class="note">门槛随持仓价值降低：500万到1000万要持仓数量变动 10%，1000万到1500万要 5%，1500万以上要 5%。未到 500 万不播。持仓涨且价格涨：优先推报，做多。持仓涨且价格跌或平：可能为出货、洗盘或蓄力。持仓跌且价格跌：弃盘行情，需观望。持仓跌且价格涨：需观望。60 分钟内持仓价值翻倍是最高级别。持仓价值跨过 2000 万单独提醒，庄家常在此离场或加速拉升。</p>
+  <p class="note">监测的是未平仓合约，不是币的持有数量。门槛随未平仓金额降低：500万到1000万要未平仓合约数量变动 10%，1000万到1500万要 5%，1500万以上要 5%。未到 500 万不播。未平仓涨且价格涨：优先推报，做多。未平仓涨且价格跌或平：可能为出货、洗盘或蓄力。未平仓跌且价格跌：弃盘行情，需观望。未平仓跌且价格涨：需观望。60 分钟内未平仓金额翻倍是最高级别。未平仓金额跨过 2000 万单独提醒，庄家常在此离场或加速拉升。</p>
 
   <div class="table-wrap">
     <table>
@@ -136,16 +136,16 @@
           <th data-sort="symbol">币种</th>
           <th class="num" data-sort="price">价格</th>
           <th class="num" data-sort="priceChangePercent">价格24h</th>
-          <th class="num" data-sort="oi" title="当前持仓的币数量，sumOpenInterest">持仓量</th>
-          <th class="num" data-sort="oiValue" title="当前持仓的 USDT 名义价值，sumOpenInterestValue">持仓价值</th>
-          <th class="num" data-sort="scale5m" title="5分钟前的持仓价值是 A，现在是 B。这一列是 B 减 A">5分钟刻度</th>
-          <th class="num" id="valueSort" data-sort="oiValue:1h" title="持仓价值相对所选窗口的涨跌幅">价值涨跌 · 1小时</th>
-          <th class="num" id="oiSort" data-sort="oi:1h" title="持仓币数相对所选窗口的涨跌幅，不含价格">数量涨跌 · 1小时</th>
-          <th id="factSort" title="用持仓数量和同一窗口的价格变化判断">事实 · 1小时</th>
+          <th class="num" data-sort="oi" title="未平仓合约数量 sumOpenInterest，不是账户持有的币">未平仓合约</th>
+          <th class="num" data-sort="oiValue" title="未平仓合约的 USDT 金额 sumOpenInterestValue，不是持有市值">未平仓金额</th>
+          <th class="num" data-sort="scale5m" title="5分钟前的未平仓金额是 A，现在是 B。刻度是 B 减 A，不是持有数量">5分钟刻度</th>
+          <th class="num" id="valueSort" data-sort="oiValue:1h" title="未平仓金额相对所选窗口的涨跌幅">金额涨跌 · 1小时</th>
+          <th class="num" id="oiSort" data-sort="oi:1h" title="未平仓合约数量相对所选窗口的涨跌幅，不含价格">未平仓涨跌 · 1小时</th>
+          <th id="factSort" title="用未平仓合约数量和同一窗口的价格变化判断">事实 · 1小时</th>
           <th class="num" data-sort="marketCap">市值</th>
-          <th class="num" data-sort="oiToMarketCapPct" title="持仓价值除以市值">OI/市值</th>
+          <th class="num" data-sort="oiToMarketCapPct" title="未平仓金额除以市值">OI/市值</th>
           <th class="num" data-sort="quoteVolume">24h成交额</th>
-          <th>价值趋势</th>
+          <th>未平仓金额趋势</th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
@@ -153,7 +153,7 @@
   </div>
 
   <footer>
-    数据来自币安 U 本位公开接口：持仓历史、24 小时行情，以及一次取完全市场的资金费率。持仓大约每 5 分钟一个点。5 分钟刻度是现在的持仓价值减去 5 分钟前的持仓价值。不会自动下单。指数合约没有流通量时，市值说「暂无」。
+    数据来自币安 U 本位公开接口的未平仓合约，不是持有数量。大约每 5 分钟一个点。5 分钟刻度是现在的未平仓金额减去 5 分钟前的未平仓金额。不会自动下单。指数合约没有流通量时，市值说「暂无」。
   </footer>
   <script src="/app.js"></script>
   <script src="/broadcast.js"></script>

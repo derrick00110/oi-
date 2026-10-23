@@ -14,7 +14,7 @@ from oi_monitor.metrics import judge, screen_change
 
 WINDOWS = {"15m": "15分钟", "1h": "1小时", "4h": "4小时", "24h": "24小时"}
 WINDOW_SECONDS = {"15m": 900, "1h": 3600, "4h": 14400, "24h": 86400}
-METRICS = {"oiValuePct": "持仓价值", "oiPct": "持仓量"}
+METRICS = {"oiValuePct": "未平仓金额", "oiPct": "未平仓合约"}
 DIRECTIONS = {"up", "down", "both"}
 
 
@@ -55,7 +55,7 @@ def _clean_rule(raw: dict, fallback_id: str) -> dict:
     if window not in WINDOWS:
         raise ValueError("窗口只能是 15m、1h、4h、24h")
     if metric not in METRICS:
-        raise ValueError("指标只能是持仓价值或持仓量")
+        raise ValueError("指标只能是未平仓金额或未平仓合约")
     if direction not in DIRECTIONS:
         raise ValueError("方向只能是 up、down、both")
     try:
@@ -69,9 +69,9 @@ def _clean_rule(raw: dict, fallback_id: str) -> dict:
     if not 0.1 <= min_abs <= 500:
         raise ValueError("涨跌幅阈值需要在 0.1 到 500 之间")
     if min_value < 0:
-        raise ValueError("最小持仓价值不能是负数")
+        raise ValueError("最小未平仓金额不能是负数")
     if max_value is not None and max_value < min_value:
-        raise ValueError("持仓价值上限不能小于下限")
+        raise ValueError("未平仓金额上限不能小于下限")
     if min_price is not None and min_price > 500:
         raise ValueError("价格涨幅阈值需要在 0 到 500 之间")
     if not 60 <= cooldown <= 86_400:
@@ -251,7 +251,7 @@ def describe(row: dict, rule: dict, chop_pct: float = 0.5) -> dict | None:
         if screened["doubled"]:
             notes.append("最高级别")
             notes.append(
-                f"持仓价值从 {usd_text(screened['previous'])} 增至 {usd_text(row.get('oiValue'))}，短时间翻倍"
+                f"未平仓金额从 {usd_text(screened['previous'])} 增至 {usd_text(row.get('oiValue'))}，短时间翻倍"
             )
         if screened["watershed"]:
             notes.append("未平仓合约量达到2000万关键分水岭，庄家常在此离场或加速拉升")

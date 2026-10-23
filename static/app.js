@@ -201,7 +201,7 @@ function renderStats(rows) {
   const label = windowLabel(state.window);
   host.hidden = false;
   host.replaceChildren(
-    statCard("当前筛选持仓价值", compact(total), `${rows.length} 个合约`),
+    statCard("当前筛选未平仓金额", compact(total), `${rows.length} 个合约`),
     statCard(`${label}价值方向`, `${up} 增 / ${down} 减`, changes.length ? `平 ${changes.length - up - down}` : "没有可比较的历史"),
     moverCard(`${label}价值涨幅最大`, gainer),
     moverCard(`${label}价值跌幅最大`, loser),
@@ -260,7 +260,7 @@ function sparkline(values) {
   const low = compact(min);
   const high = compact(max);
   svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", `近 24 小时持仓价值，低点 ${low}，高点 ${high}`);
+  svg.setAttribute("aria-label", `近 24 小时未平仓金额，低点 ${low}，高点 ${high}`);
   return svg;
 }
 
@@ -290,8 +290,8 @@ function changeCell(row, field) {
   const value = item[field];
   const delta = field === "oiPct" ? item.oiDelta : item.oiValueDelta;
   const tip = field === "oiValuePct"
-    ? `同窗口隐含价格 ${pct(item.pricePct)}。价值变化同时包含持仓数量和价格。`
-    : "只比较持仓币数，不包含价格涨跌。";
+    ? `同窗口隐含价格 ${pct(item.pricePct)}。未平仓金额同时包含未平仓合约数量和价格。`
+    : "只比较未平仓合约数量，不是持有数量，也不包含价格涨跌。";
   return el("div", { class: "stack", title: tip }, [
     el("span", { class: `primary pill ${tone(value)}`, text: pct(value) }),
     el("span", { class: "sub", text: signedCompact(delta, field === "oiPct") }),
@@ -302,7 +302,7 @@ function changeCell(row, field) {
 function renderTable(rows) {
   const body = $("#rows");
   if (!state.data) {
-    body.replaceChildren(el("tr", {}, [el("td", { class: "empty", colspan: "13", text: state.loading ? "正在扫描币安合约持仓…" : "等待数据" })]));
+    body.replaceChildren(el("tr", {}, [el("td", { class: "empty", colspan: "13", text: state.loading ? "正在扫描未平仓合约…" : "等待数据" })]));
     return;
   }
   if (!rows.length) {
@@ -373,7 +373,7 @@ function scaleCell(row) {
   const delta = change.oiValueDelta;
   const before = delta == null ? null : row.oiValue - delta;
   const span = before == null ? "暂无 5 分钟点" : `${compact(before)} → ${compact(row.oiValue)}`;
-  return el("div", { class: "stack", title: "A 是 5 分钟前的持仓价值，B 是现在的持仓价值，刻度是 B 减 A" }, [
+  return el("div", { class: "stack", title: "A 是 5 分钟前的未平仓金额，B 是现在的未平仓金额，刻度是 B 减 A。不是持有数量。" }, [
     el("span", { class: `primary pill ${tone(delta)}`, text: delta == null ? "—" : signedCompact(delta) }),
     el("span", { class: "sub", text: span }),
   ]);
@@ -392,8 +392,8 @@ function detailRow(row) {
     const change = row.changes[item.id];
     return el("div", { class: "panel" }, [
       el("div", { class: "k", text: item.label }),
-      metricLine("持仓量", pct(change.oiPct), signedCompact(change.oiDelta, true), change.oiPct),
-      metricLine("持仓价值", pct(change.oiValuePct), signedCompact(change.oiValueDelta), change.oiValuePct),
+      metricLine("未平仓合约", pct(change.oiPct), signedCompact(change.oiDelta, true), change.oiPct),
+      metricLine("未平仓金额", pct(change.oiValuePct), signedCompact(change.oiValueDelta), change.oiValuePct),
       metricLine("隐含价格", pct(change.pricePct), "", change.pricePct),
     ]);
   });
@@ -420,10 +420,10 @@ function renderChrome() {
   const oiHeader = $("#oiSort");
   valueHeader.dataset.sort = `oiValue:${state.window}`;
   oiHeader.dataset.sort = `oi:${state.window}`;
-  valueHeader.textContent = `价值涨跌 · ${windowLabel(state.window)}`;
+  valueHeader.textContent = `金额涨跌 · ${windowLabel(state.window)}`;
   const factHeader = $("#factSort");
   if (factHeader) factHeader.textContent = `事实 · ${windowLabel(state.window)}`;
-  oiHeader.textContent = `数量涨跌 · ${windowLabel(state.window)}`;
+  oiHeader.textContent = `未平仓涨跌 · ${windowLabel(state.window)}`;
   document.querySelectorAll("#windows button").forEach((button) => {
     button.classList.toggle("active", button.dataset.window === state.window);
   });
@@ -466,7 +466,7 @@ function renderBanner() {
     const names = (state.data.errors || []).map((item) => item.symbol).join("、");
     banner.hidden = false;
     banner.className = "banner warn";
-    banner.textContent = `${count} 个合约的持仓历史没有拉到${names ? `：${names}` : ""}`;
+    banner.textContent = `${count} 个合约的未平仓数据没有拉到${names ? `：${names}` : ""}`;
     return;
   }
   banner.hidden = true;

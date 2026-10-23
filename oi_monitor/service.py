@@ -177,11 +177,11 @@ class Monitor:
                 timeout=15,
             )
             if isinstance(raw, dict):
-                message = str(raw.get("msg") or raw.get("code") or "持仓历史返回异常")
+                message = str(raw.get("msg") or raw.get("code") or "未平仓合约历史返回异常")
                 return symbol, None, message
             row = build_row(symbol, base, rank, ticker, normalize(raw), premium)
             if row is None:
-                return symbol, None, "没有持仓历史"
+                return symbol, None, "没有未平仓合约历史"
             return symbol, row, None
         except Exception as exc:  # noqa: BLE001 - one symbol must not fail the scan
             return symbol, None, str(exc)

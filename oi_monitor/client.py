@@ -180,7 +180,7 @@ def _explain(err: Exception | None) -> str:
             "可以设置 https_proxy 后重试，或换一个能访问币安的网络。"
         )
     if isinstance(err, RateLimited):
-        return "币安持仓历史接口限流（约 1000 次 / 5 分钟），请稍后再扫描。"
+        return "币安未平仓合约历史接口限流（约 1000 次 / 5 分钟），请稍后再扫描。"
     if not text:
         return "无法连接币安公开接口"
     return f"无法连接币安公开接口：{text[:240]}"
