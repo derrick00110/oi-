@@ -12,10 +12,24 @@ from pathlib import Path
 
 from oi_monitor.metrics import judge, screen_change
 
+SCAN_PERIOD_SEC = 300
+SCAN_LAG_SEC = 90
+
 WINDOWS = {"15m": "15分钟", "1h": "1小时", "4h": "4小时", "24h": "24小时"}
 WINDOW_SECONDS = {"15m": 900, "1h": 3600, "4h": 14400, "24h": 86400}
 METRICS = {"oiValuePct": "未平仓金额", "oiPct": "未平仓合约"}
 DIRECTIONS = {"up", "down", "both"}
+
+
+def seconds_until_scan(now: float, period: int = SCAN_PERIOD_SEC, lag: int = SCAN_LAG_SEC) -> float:
+    """Wait until `lag` seconds after each period boundary, so the new 5-minute bar is in."""
+    if period <= 0 or lag < 0 or lag >= period:
+        raise ValueError("扫描周期无效")
+    slot = int(now) // period
+    target = slot * period + lag
+    if now >= target:
+        target += period
+    return float(target - now)
 
 
 def default_rules() -> list[dict]:

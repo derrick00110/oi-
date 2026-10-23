@@ -55,7 +55,8 @@ class Monitor:
             if not payload["rows"]:
                 ttl = 5
             elif key == 0 or key >= 300:
-                ttl = 300
+                # Longer than the 5-minute broadcast pull, so the page does not start a second scan.
+                ttl = 420
             elif key > 200:
                 ttl = 180
             else:

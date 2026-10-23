@@ -155,7 +155,7 @@ async function poll() {
   }
   const error = payload.lastError ? ` · ${payload.lastError}` : "";
   if (Date.now() >= noticeUntil) {
-    document.querySelector("#broadcastMeta").textContent = `最近扫描 ${when} · 每轮最多 ${settings.maxPerRound || 5} 条${error}`;
+    document.querySelector("#broadcastMeta").textContent = `最近扫描 ${when} · 每 5 分钟重拉未平仓金额 · 每轮最多 ${settings.maxPerRound || 5} 条${error}`;
   }
 }
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from oi_monitor.broadcast import BroadcastBook, compose, default_rules
+from oi_monitor.broadcast import BroadcastBook, compose, default_rules, seconds_until_scan
 from oi_monitor.trading import TradingDesk, sign_query
 from oi_monitor.client import BinanceError
 
@@ -112,6 +112,15 @@ class BroadcastTest(unittest.TestCase):
         self.assertIn("币安未平仓金额 +8.0%", text)
         self.assertIn("优先推报，做多信号", text)
         self.assertNotIn("未平仓减少", text)
+
+    def test_fresh_scan_lands_just_after_each_five_minute_mark(self):
+        base = 1_700_000_100
+        base -= base % 300
+        self.assertEqual(seconds_until_scan(base), 90)
+        self.assertEqual(seconds_until_scan(base + 89), 1)
+        self.assertEqual(seconds_until_scan(base + 90), 300)
+        self.assertEqual(seconds_until_scan(base + 120), 270)
+        self.assertLessEqual(seconds_until_scan(base + 1), 120)
 
     def test_threshold_cooldown_and_cap(self):
         with tempfile.TemporaryDirectory() as directory:

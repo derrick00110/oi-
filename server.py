@@ -13,7 +13,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from oi_monitor.broadcast import BroadcastBook, deliver_webhook
+from oi_monitor.broadcast import BroadcastBook, deliver_webhook, seconds_until_scan
 from oi_monitor.client import BinanceError
 from oi_monitor.metrics import attach_reads, parse_limit, screen_change
 from oi_monitor.service import Monitor
@@ -154,18 +154,25 @@ class BroadcastLoop:
         threading.Thread(target=self._run, name="broadcast", daemon=True).start()
 
     def _run(self) -> None:
+        first = True
         while not self.stop.is_set():
-            started = time.time()
+            delay = seconds_until_scan(time.time())
+            if first and delay > 45:
+                self.tick()
+                if self.stop.is_set():
+                    return
+                delay = seconds_until_scan(time.time())
+            first = False
+            if self.stop.wait(delay):
+                return
             self.tick()
-            interval = max(30, int(self.book.settings.get("intervalSec") or 60))
-            self.stop.wait(max(1, interval - (time.time() - started)))
 
     def tick(self) -> None:
         limit = self.book.settings.get("limit")
         if limit is not None:
             limit = int(limit)
         try:
-            payload = self.monitor.scan(limit)
+            payload = self.monitor.scan(limit, fresh=True)
         except Exception as exc:  # noqa: BLE001 - keep the next round alive
             self.book.mark_scan(str(exc)[:240])
             LOG.warning("播报扫描失败：%s", exc)
@@ -351,7 +358,7 @@ def serve(host: str, port: int) -> None:
     LOOP.start()
     shown = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     print(f"oi事实监测播报已启动： http://{shown}:{port}")
-    print("按未平仓金额涨跌和价格判断。不会自动下单。按 Ctrl+C 结束。")
+    print("按未平仓金额涨跌和价格判断。每 5 分钟对齐重拉，不走缓存。不会自动下单。按 Ctrl+C 结束。")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
