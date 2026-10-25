@@ -347,7 +347,7 @@ class BroadcastBook:
                 self.settings = default_settings()
         if isinstance(state, dict):
             items = state.get("items") or []
-            self.items = [item for item in items if isinstance(item, dict)][-200:]
+            self.items = [item for item in items if isinstance(item, dict)][-5000:]
             self.next_id = int(state.get("nextId") or (max((item.get("id", 0) for item in self.items), default=0) + 1))
             seen = state.get("seen") or {}
             if isinstance(seen, dict):
@@ -427,7 +427,7 @@ class BroadcastBook:
                 self.seen[key] = {"snapshot": snapshot, "at": moment}
                 created.append(item)
             if created:
-                self.items = self.items[-200:]
+                self.items = self.items[-5000:]
                 self._write_state()
         return created
 
@@ -475,7 +475,7 @@ class BroadcastBook:
     def _write_state(self) -> None:
         self._write_json(
             "broadcasts.json",
-            {"nextId": self.next_id, "items": self.items[-200:], "seen": self.seen},
+            {"nextId": self.next_id, "items": self.items[-5000:], "seen": self.seen},
         )
 
     def _read_json(self, name: str):

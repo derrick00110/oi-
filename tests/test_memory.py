@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from oi_monitor.memory import SHANGHAI, DayMemory, shanghai_parts
+from oi_monitor.replay import hits_from_series
 
 
 def epoch_ms(year, month, day, hour, minute, second=0):
@@ -57,6 +58,29 @@ class MemoryTest(unittest.TestCase):
             index = (Path(directory) / "index.md").read_text(encoding="utf-8")
             self.assertIn("[2026-10-25](2026-10-25.md)：播报 1 条，越过门槛 1 条，扫描 3 次", index)
             self.assertIn("[2026-10-26](2026-10-26.md)：播报 0 条，越过门槛 1 条，扫描 1 次", index)
+
+    def test_replay_fills_moves_the_live_list_never_kept(self):
+        step = 5 * 60 * 1000
+        start = 1_760_000_000_000
+        series = []
+        for index in range(20):
+            value = 4_000_000 if index < 13 else 4_800_000
+            series.append({"timestamp": start + index * step, "oi": 100, "oiValue": value, "supply": 0})
+        hits = hits_from_series("AKEUSDT", "AKE", series)
+        self.assertGreaterEqual(len(hits), 1)
+        self.assertTrue(all(hit["source"] == "replay" for hit in hits))
+        self.assertAlmostEqual(hits[0]["move"], 20.0, places=4)
+        quiet = [{"timestamp": start + index * step, "oi": 100, "oiValue": 4_000_000, "supply": 0} for index in range(20)]
+        self.assertEqual(hits_from_series("AKEUSDT", "AKE", quiet), [])
+
+        with tempfile.TemporaryDirectory() as directory:
+            memory = DayMemory(Path(directory))
+            self.assertEqual(memory.add_hits(hits), len(hits))
+            self.assertEqual(memory.add_hits(hits), 0)
+            day, _clock = shanghai_parts(hits[0]["at"])
+            text = (Path(directory) / f"{day}.md").read_text(encoding="utf-8")
+            self.assertIn("回放", text)
+            self.assertIn("AKEUSDT", text)
 
 
 if __name__ == "__main__":

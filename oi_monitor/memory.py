@@ -66,6 +66,41 @@ class DayMemory:
                 self._render(name)
             self._render_index()
 
+    def add_hits(self, hits: list[dict]) -> int:
+        added = 0
+        buckets: dict[str, list[str]] = {}
+        with self._lock:
+            for hit in hits:
+                event = {
+                    "type": "hit",
+                    "at": int(hit["at"]),
+                    "symbol": hit.get("symbol") or "",
+                    "snapshotAt": hit.get("snapshotAt"),
+                    "oiValue": hit.get("oiValue"),
+                    "move": hit.get("move"),
+                    "pricePct": hit.get("pricePct"),
+                    "fact": hit.get("fact") or "",
+                    "text": hit.get("text") or "",
+                    "window": hit.get("window") or "1h",
+                    "announced": bool(hit.get("announced")),
+                    "source": hit.get("source") or "",
+                }
+                key = self._event_key(event)
+                if key in self._seen:
+                    continue
+                day, _clock = shanghai_parts(event["at"])
+                buckets.setdefault(day, []).append(json.dumps(event, ensure_ascii=False))
+                self._seen.add(key)
+                added += 1
+            for day, lines in buckets.items():
+                path = self.directory / f"{day}.jsonl"
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write("\n".join(lines) + "\n")
+                self._render(day)
+            if buckets:
+                self._render_index()
+        return added
+
     def record_failure(self, at_ms: int, message: str) -> None:
         with self._lock:
             day, _clock = shanghai_parts(at_ms)
@@ -164,7 +199,7 @@ class DayMemory:
         lines = [
             f"# {day} 未平仓监测",
             "",
-            "北京时间。这一天监测到的播报、越过门槛的合约、每一轮扫描都在下面。金额是未平仓金额。",
+            "北京时间。这一天监测到的播报、越过门槛的合约、每一轮扫描都在下面。金额是未平仓金额。回放是用币安还留着的 5 分钟历史补上的，当时的 24 小时涨跌没有留存，写的是暂无。",
             "",
             "## 播报",
             "",
@@ -187,7 +222,12 @@ class DayMemory:
             )
             for event in sorted(hits, key=lambda item: int(item.get("at") or 0)):
                 _day, clock = shanghai_parts(int(event["at"]))
-                spoken = "已播" if event.get("announced") else "未播"
+                if event.get("source") == "replay":
+                    spoken = "回放"
+                elif event.get("announced"):
+                    spoken = "已播"
+                else:
+                    spoken = "未播"
                 fact = str(event.get("fact") or "").replace("|", " ")
                 lines.append(
                     f"| {clock} | {event.get('symbol') or ''} | {signed_pct(event.get('move'))} | {usd_text(event.get('oiValue'))} | {signed_pct(event.get('pricePct'))} | {fact} | {spoken} |"
