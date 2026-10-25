@@ -353,6 +353,36 @@ class BroadcastBook:
             if isinstance(seen, dict):
                 self.seen = seen
 
+    def qualify(self, rows: list[dict]) -> list[dict]:
+        """Every enabled-rule hit, before the per-round cap and cooldown."""
+        with self._lock:
+            rules = [rule for rule in self.rules if rule.get("enabled")]
+            chop = float(self.settings.get("priceChopPct") or 0.5)
+        found = []
+        for row in rows:
+            for rule in rules:
+                hit = describe(row, rule, chop)
+                if hit is None:
+                    continue
+                change = (row.get("changes") or {}).get(rule["window"]) or {}
+                move = float(hit["move"])
+                found.append(
+                    {
+                        "symbol": row.get("symbol") or "",
+                        "base": row.get("base") or row.get("symbol") or "",
+                        "snapshotAt": row.get("snapshotAt"),
+                        "oiValue": row.get("oiValue"),
+                        "move": round(move, 4),
+                        "pricePct": change.get("pricePct"),
+                        "fact": hit["fact"],
+                        "text": hit["text"],
+                        "rank": hit["rank"],
+                        "window": rule["window"],
+                    }
+                )
+        found.sort(key=lambda item: (item["rank"], abs(item["move"])), reverse=True)
+        return found
+
     def evaluate(self, rows: list[dict], snapshot_at: int | None, now: float | None = None) -> list[dict]:
         moment = time.time() if now is None else now
         snapshot = int(snapshot_at or 0)
