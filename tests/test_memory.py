@@ -62,9 +62,9 @@ class MemoryTest(unittest.TestCase):
     def test_replay_fills_moves_the_live_list_never_kept(self):
         step = 5 * 60 * 1000
         start = 1_760_000_000_000
+        start -= start % (30 * 60 * 1000)
         series = []
-        for index in range(20):
-            value = 4_000_000 if index < 13 else 4_800_000
+        for index, value in enumerate([4_000_000, 3_900_000, 4_200_000, 4_100_000, 4_800_000]):
             series.append({"timestamp": start + index * step, "oi": 100, "oiValue": value, "supply": 0})
         hits = hits_from_series("AKEUSDT", "AKE", series)
         self.assertGreaterEqual(len(hits), 1)

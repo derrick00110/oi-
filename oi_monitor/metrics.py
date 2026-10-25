@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import time
+
 BAR_MINUTES = 5
+TICK_MS = 5 * 60_000
+CYCLE_MS = 30 * 60_000
+TICK_COUNT = 5
+VERIFY_AFTER_MS = 25 * 60_000
 WINDOWS = (
     ("5m", 5),
     ("15m", 15),
@@ -114,7 +120,95 @@ def _round_changes(changes: dict) -> dict:
     return rounded
 
 
-def build_row(symbol: str, base: str, volume_rank: int, ticker: dict, series: list[dict], premium: dict | None = None) -> dict | None:
+def _point_at_stamp(series: list[dict], target: int, tolerance_ms: int = 60_000):
+    best = None
+    best_gap = tolerance_ms + 1
+    for row in series:
+        gap = abs(row["timestamp"] - target)
+        if gap <= tolerance_ms and gap < best_gap:
+            best = row
+            best_gap = gap
+    return best
+
+
+def cycle_view(series: list[dict], now_ms: int | None = None) -> dict:
+    """Five 5-minute readings in the current 30-minute round. The gate uses the 1st and the 5th."""
+    empty = {
+        "start": None,
+        "ready": False,
+        "count": 0,
+        "ticks": [None] * TICK_COUNT,
+        "first": None,
+        "fifth": None,
+        "oiValuePct": None,
+        "pricePct": None,
+        "oiValueDelta": None,
+    }
+    if not series:
+        return empty
+    clock = int(series[-1]["timestamp"] if now_ms is None else now_ms)
+    start = clock - (clock % CYCLE_MS)
+    ticks = []
+    for index in range(TICK_COUNT):
+        point = _point_at_stamp(series, start + index * TICK_MS)
+        if point is None:
+            ticks.append(None)
+            continue
+        ticks.append(
+            {
+                "at": point["timestamp"],
+                "oiValue": point["oiValue"],
+                "price": _implied_price(point["oi"], point["oiValue"]),
+            }
+        )
+    first = ticks[0]
+    fifth = ticks[-1]
+    oi_pct = price_pct = delta = None
+    if first and fifth:
+        oi_pct = pct_change(fifth["oiValue"], first["oiValue"])
+        delta = fifth["oiValue"] - first["oiValue"]
+        if first["price"] is not None and fifth["price"] is not None:
+            price_pct = pct_change(fifth["price"], first["price"])
+    return {
+        "start": start,
+        "ready": clock >= start + VERIFY_AFTER_MS and all(ticks),
+        "count": sum(point is not None for point in ticks),
+        "ticks": ticks,
+        "first": None if not first else first["oiValue"],
+        "fifth": None if not fifth else fifth["oiValue"],
+        "oiValuePct": oi_pct,
+        "pricePct": price_pct,
+        "oiValueDelta": delta,
+    }
+
+
+def _public_cycle(cycle: dict) -> dict:
+    ticks = []
+    for point in cycle["ticks"]:
+        if point is None:
+            ticks.append(None)
+            continue
+        ticks.append(
+            {
+                "at": point["at"],
+                "oiValue": _round(point["oiValue"], 2),
+                "price": _round(point["price"], 8),
+            }
+        )
+    return {
+        "start": cycle["start"],
+        "ready": cycle["ready"],
+        "count": cycle["count"],
+        "ticks": ticks,
+        "first": _round(cycle["first"], 2),
+        "fifth": _round(cycle["fifth"], 2),
+        "oiValuePct": _round(cycle["oiValuePct"], 4),
+        "pricePct": _round(cycle["pricePct"], 4),
+        "oiValueDelta": _round(cycle["oiValueDelta"], 2),
+    }
+
+
+def build_row(symbol: str, base: str, volume_rank: int, ticker: dict, series: list[dict], premium: dict | None = None, now_ms: int | None = None) -> dict | None:
     if not series:
         return None
     latest = series[-1]
@@ -141,6 +235,7 @@ def build_row(symbol: str, base: str, volume_rank: int, ticker: dict, series: li
         "nextFundingTime": next_funding,
         "snapshotAt": latest["timestamp"],
         "changes": _round_changes(changes_for(series)),
+        "cycle": _public_cycle(cycle_view(series, int(time.time() * 1000) if now_ms is None else now_ms)),
         "spark": [round(point["oiValue"], 2) for point in series],
     }
 
@@ -249,6 +344,23 @@ def attach_reads(rows: list[dict], chop_pct: float) -> list[dict]:
             )
             for name, change in (row.get("changes") or {}).items()
         }
+        cycle = row.get("cycle") or {}
+        if cycle.get("ready"):
+            item["cycleRead"] = screen_change(
+                cycle.get("fifth"),
+                cycle.get("oiValuePct"),
+                cycle.get("pricePct"),
+                cycle.get("oiValueDelta"),
+                chop_pct,
+            )
+        else:
+            count = int(cycle.get("count") or 0)
+            item["cycleRead"] = {
+                "code": "pending",
+                "text": f"刻度 {count}/5，最后 5 分钟再核实",
+                "bias": "flat",
+                "qualified": False,
+            }
         attached.append(item)
     return attached
 

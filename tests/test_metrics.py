@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from oi_monitor.metrics import build_row, changes_for, judge, normalize, oi_move_threshold, parse_limit, pct_change
+from oi_monitor.metrics import build_row, changes_for, cycle_view, judge, normalize, oi_move_threshold, parse_limit, pct_change
 
 
 def linear_series(n=97, oi0=100.0, oi1=110.0, v0=1000.0, v1=1300.0, supply=2000.0):
@@ -145,6 +145,24 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(oi_move_threshold(15_000_000), 5)
         self.assertEqual(oi_move_threshold(15_000_001), 5)
         self.assertEqual(oi_move_threshold(30_000_000), 5)
+
+    def test_broadcast_uses_first_and_fifth_tick_only(self):
+        step = 5 * 60 * 1000
+        start = 1_700_000_000_000
+        start -= start % (30 * 60 * 1000)
+        amounts = [5_000_000, 4_700_000, 5_700_000, 5_300_000, 6_000_000]
+        prices = [10, 9, 12, 11, 11]
+        series = []
+        for index, (amount, price) in enumerate(zip(amounts, prices)):
+            series.append({"timestamp": start + index * step, "oi": amount / price, "oiValue": amount, "supply": 0})
+        ready = cycle_view(series, start + 26 * 60 * 1000)
+        self.assertTrue(ready["ready"])
+        self.assertEqual(ready["count"], 5)
+        self.assertAlmostEqual(ready["oiValuePct"], 20.0, places=4)
+        self.assertAlmostEqual(ready["pricePct"], 10.0, places=4)
+        early = cycle_view(series, start + 21 * 60 * 1000)
+        self.assertFalse(early["ready"])
+        self.assertAlmostEqual(early["oiValuePct"], 20.0, places=4)
 
     def test_parse_limit(self):
         self.assertEqual(parse_limit("60"), 60)

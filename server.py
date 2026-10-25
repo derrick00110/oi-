@@ -375,7 +375,7 @@ def serve(host: str, port: int) -> None:
     LOOP.start()
     shown = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     print(f"oi事实监测播报已启动： http://{shown}:{port}")
-    print("按未平仓金额涨跌和价格判断。每 5 分钟对齐重拉，不走缓存。不会自动下单。按 Ctrl+C 结束。")
+    print("每 5 分钟记刻度，每 30 分钟用第 1 次和第 5 次核实门槛后播报。不会自动下单。按 Ctrl+C 结束。")
     print(f"每天的监测记录写在 {MEMORY.directory}")
     try:
         httpd.serve_forever()

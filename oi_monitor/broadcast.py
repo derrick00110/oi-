@@ -239,6 +239,32 @@ def funding_phrase(rate) -> str:
     return f"资金费率 {percent:+.4f}%，{who}"
 
 
+def _tick_price_phrase(price_pct) -> str:
+    if price_pct is None:
+        return "第 1 次到第 5 次刻度的价格变动暂无"
+    if price_pct > 0:
+        direction = "上涨"
+    elif price_pct < 0:
+        direction = "下跌"
+    else:
+        return "第 1 次到第 5 次刻度价格持平"
+    return f"第 1 次到第 5 次刻度价格{direction} {abs(price_pct):.1f}%"
+
+
+def _cycle_sentence(row: dict, cycle: dict, conclusion: str, mark: str) -> str:
+    ratio = "暂无" if row.get("oiToMarketCapPct") is None else f"{row['oiToMarketCapPct']:.1f}%"
+    symbol = row.get("symbol") or row.get("base")
+    return (
+        f"{mark} [{symbol}] 币安未平仓金额 {signed_pct(cycle.get('oiValuePct'))}，"
+        f"{_tick_price_phrase(cycle.get('pricePct'))}，"
+        f"第 1 次刻度 {usd_text(cycle.get('first'))}，第 5 次刻度 {usd_text(cycle.get('fifth'))}，"
+        f"未平仓金额：{usd_text(cycle.get('fifth'))}，"
+        f"未平仓金额/市值比率：{ratio}，"
+        f"24 小时价格变动：{signed_pct(row.get('priceChangePercent'))}。"
+        f"{conclusion}"
+    )
+
+
 def _sentence(row: dict, rule: dict, change: dict, conclusion: str, mark: str) -> str:
     ratio = "暂无" if row.get("oiToMarketCapPct") is None else f"{row['oiToMarketCapPct']:.1f}%"
     symbol = row.get("symbol") or row.get("base")
@@ -255,11 +281,14 @@ def _sentence(row: dict, rule: dict, change: dict, conclusion: str, mark: str) -
 def describe(row: dict, rule: dict, chop_pct: float = 0.5) -> dict | None:
     change = (row.get("changes") or {}).get(rule["window"]) or {}
     if rule.get("dynamic"):
+        cycle = row.get("cycle") or {}
+        if not cycle.get("ready"):
+            return None
         screened = screen_change(
-            row.get("oiValue"),
-            change.get("oiValuePct"),
-            change.get("pricePct"),
-            change.get("oiValueDelta"),
+            cycle.get("fifth"),
+            cycle.get("oiValuePct"),
+            cycle.get("pricePct"),
+            cycle.get("oiValueDelta"),
             chop_pct,
         )
         if not screened["qualified"]:
@@ -268,7 +297,7 @@ def describe(row: dict, rule: dict, chop_pct: float = 0.5) -> dict | None:
         if screened["doubled"]:
             notes.append("最高级别")
             notes.append(
-                f"未平仓金额从 {usd_text(screened['previous'])} 增至 {usd_text(row.get('oiValue'))}，短时间翻倍"
+                f"未平仓金额从 {usd_text(screened['previous'])} 增至 {usd_text(cycle.get('fifth'))}，短时间翻倍"
             )
         if screened["watershed"]:
             notes.append("未平仓金额达到2000万关键分水岭，庄家常在此离场或加速拉升")
@@ -276,8 +305,8 @@ def describe(row: dict, rule: dict, chop_pct: float = 0.5) -> dict | None:
         mark = "🟢" if screened["doubled"] or screened["code"] == "long" else "⚪"
         rank = 3 if screened["doubled"] else (2 if screened["code"] == "long" else 1)
         return {
-            "text": _sentence(row, rule, change, "。".join(notes), mark),
-            "move": change.get("oiValuePct") or 0,
+            "text": _cycle_sentence(row, cycle, "。".join(notes), mark),
+            "move": cycle.get("oiValuePct") or 0,
             "rank": rank,
             "fact": screened["fact"],
         }

@@ -127,7 +127,7 @@
     <span id="count" class="meta"></span>
   </section>
 
-  <p class="note">监测的是未平仓合约，不是币的持有数量。门槛看未平仓金额涨跌：500万以下 ±15%，500万到1000万 ±10%，1000万到1500万 ±5%，1500万以上 ±5%。未平仓金额涨且价格涨：优先推报，做多。未平仓金额涨且价格跌或平：可能为出货、洗盘或蓄力。未平仓金额跌且价格跌：弃盘行情，需观望。未平仓金额跌且价格涨：需观望。60 分钟内未平仓金额翻倍是最高级别。未平仓金额跨过 2000 万单独提醒，庄家常在此离场或加速拉升。</p>
+  <p class="note">监测的是未平仓合约，不是币的持有数量。每 5 分钟记一次刻度，每 30 分钟播一次。一轮记满 5 次后，最后 5 分钟只用第 1 次和第 5 次核实：未平仓金额和价格都是这样比。门槛看第 5 次的未平仓金额：500万以下 ±15%，500万到1000万 ±10%，1000万以上 ±5%。中间三次刻度只展示，不参与门槛。未平仓金额涨且价格涨：优先推报，做多。未平仓金额涨且价格跌或平：可能为出货、洗盘或蓄力。未平仓金额跌且价格跌：弃盘行情，需观望。未平仓金额跌且价格涨：需观望。</p>
 
   <div class="table-wrap">
     <table>
@@ -138,10 +138,10 @@
           <th class="num" data-sort="priceChangePercent">价格24h</th>
           <th class="num" data-sort="oi" title="未平仓合约数量 sumOpenInterest，不是账户持有的币">未平仓合约</th>
           <th class="num" data-sort="oiValue" title="未平仓合约的 USDT 金额 sumOpenInterestValue，不是持有市值">未平仓金额</th>
-          <th class="num" data-sort="scale5m" title="5分钟前的未平仓金额是 A，现在是 B。刻度是 B 减 A，不是持有数量">5分钟刻度</th>
+          <th class="num" data-sort="scale5m" title="本轮 5 次刻度。播报只比第 1 次和第 5 次">5次刻度</th>
           <th class="num" id="valueSort" data-sort="oiValue:1h" title="未平仓金额相对所选窗口的涨跌幅">金额涨跌 · 1小时</th>
           <th class="num" id="oiSort" data-sort="oi:1h" title="未平仓合约数量涨跌，只作对照。15%、10% 和 5% 不看这一列">数量涨跌 · 1小时</th>
-          <th id="factSort" title="用未平仓金额涨跌和同一窗口的价格变化判断">事实 · 1小时</th>
+          <th id="factSort" title="用第 1 次和第 5 次刻度的未平仓金额、价格核实">事实 · 本轮</th>
           <th class="num" data-sort="marketCap">市值</th>
           <th class="num" data-sort="oiToMarketCapPct" title="未平仓金额除以市值">OI/市值</th>
           <th class="num" data-sort="quoteVolume">24h成交额</th>
@@ -153,7 +153,7 @@
   </div>
 
   <footer>
-    数据来自币安 U 本位公开接口的未平仓合约，不是持有数量。大约每 5 分钟一个点。5 分钟刻度是现在的未平仓金额减去 5 分钟前的未平仓金额。不会自动下单。指数合约没有流通量时，市值说「暂无」。
+    数据来自币安 U 本位公开接口的未平仓合约，不是持有数量。每 5 分钟记一次刻度，每 30 分钟用第 1 次和第 5 次核实后再播。不会自动下单。指数合约没有流通量时，市值说「暂无」。
   </footer>
   <script src="/app.js"></script>
   <script src="/broadcast.js"></script>

@@ -131,7 +131,7 @@ function lagText(ms) {
 }
 
 function sortValue(row, key) {
-  if (key === "scale5m") return row.changes["5m"]?.oiValueDelta;
+  if (key === "scale5m") return row.cycle?.oiValuePct;
   if (key.includes(":")) {
     const [field, windowId] = key.split(":");
     const item = row.changes[windowId] || {};
@@ -346,7 +346,7 @@ function renderTable(rows) {
 }
 
 function readOf(row) {
-  return row.reads?.[state.window] || null;
+  return row.cycleRead || row.reads?.[state.window] || null;
 }
 
 function readText(row) {
@@ -369,13 +369,16 @@ function fundingText(rate) {
 }
 
 function scaleCell(row) {
-  const change = row.changes["5m"] || {};
-  const delta = change.oiValueDelta;
-  const before = delta == null ? null : row.oiValue - delta;
-  const span = before == null ? "暂无 5 分钟点" : `${compact(before)} → ${compact(row.oiValue)}`;
-  return el("div", { class: "stack", title: "A 是 5 分钟前的未平仓金额，B 是现在的未平仓金额，刻度是 B 减 A。不是持有数量。" }, [
-    el("span", { class: `primary pill ${tone(delta)}`, text: delta == null ? "—" : signedCompact(delta) }),
+  const cycle = row.cycle || {};
+  const ticks = cycle.ticks || [];
+  const span = ticks.length
+    ? ticks.map((tick) => (tick ? compact(tick.oiValue) : "—")).join(" → ")
+    : "刻度未齐";
+  const price = cycle.pricePct == null ? "" : `价格 ${pct(cycle.pricePct)}`;
+  return el("div", { class: "stack", title: "每 5 分钟记一次。播报只比第 1 次和第 5 次的未平仓金额，价格同样比这两次。中间三次不参与门槛。" }, [
+    el("span", { class: `primary pill ${tone(cycle.oiValuePct)}`, text: cycle.oiValuePct == null ? "—" : pct(cycle.oiValuePct) }),
     el("span", { class: "sub", text: span }),
+    price ? el("span", { class: "sub", text: price }) : null,
   ]);
 }
 
@@ -422,7 +425,7 @@ function renderChrome() {
   oiHeader.dataset.sort = `oi:${state.window}`;
   valueHeader.textContent = `金额涨跌 · ${windowLabel(state.window)}`;
   const factHeader = $("#factSort");
-  if (factHeader) factHeader.textContent = `事实 · ${windowLabel(state.window)}`;
+  if (factHeader) factHeader.textContent = "事实 · 本轮";
   oiHeader.textContent = `数量涨跌 · ${windowLabel(state.window)}`;
   document.querySelectorAll("#windows button").forEach((button) => {
     button.classList.toggle("active", button.dataset.window === state.window);

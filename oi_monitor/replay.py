@@ -7,61 +7,49 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from oi_monitor.broadcast import compose, default_rules
 from oi_monitor.client import BinanceClient
-from oi_monitor.metrics import index_tickers, normalize, parse_limit, pct_change, point_at, usdt_perpetuals
+from oi_monitor.metrics import cycle_view, index_tickers, normalize, parse_limit, usdt_perpetuals
 
 log = logging.getLogger("oi-monitor")
 
 HIST_PERIOD = "5m"
 HIST_LIMIT = 500
-WINDOW_MINUTES = 60
 
 
 def hits_from_series(symbol: str, base: str, series: list[dict], rule: dict | None = None, chop: float = 0.5) -> list[dict]:
-    """Every 1-hour notional move that clears the same gate as a live broadcast."""
+    """One hit per 30-minute round whose 1st and 5th ticks clear the gate."""
     rule = dict(default_rules()[0] if rule is None else rule)
+    if not series:
+        return []
+    starts = sorted({point["timestamp"] - (point["timestamp"] % (30 * 60_000)) for point in series})
     found = []
-    for point in series:
-        previous = point_at(series, point["timestamp"], WINDOW_MINUTES)
-        if previous is None or previous["timestamp"] >= point["timestamp"]:
+    for start in starts:
+        view = cycle_view(series, start + 26 * 60_000)
+        if not view.get("ready"):
             continue
-        if not point["oi"] or not previous["oi"]:
-            continue
-        move = pct_change(point["oiValue"], previous["oiValue"])
-        price_now = point["oiValue"] / point["oi"]
-        price_then = previous["oiValue"] / previous["oi"]
-        price_pct = pct_change(price_now, price_then)
-        delta = point["oiValue"] - previous["oiValue"]
-        supply = point.get("supply") or 0
-        market_cap = price_now * supply if price_now > 0 and supply > 0 else None
-        ratio = (point["oiValue"] / market_cap * 100.0) if market_cap else None
         row = {
             "symbol": symbol,
             "base": base,
-            "oiValue": point["oiValue"],
-            "oiToMarketCapPct": ratio,
+            "oiValue": view.get("fifth"),
+            "oiToMarketCapPct": None,
             "priceChangePercent": None,
-            "changes": {
-                rule["window"]: {
-                    "oiValuePct": move,
-                    "pricePct": price_pct,
-                    "oiValueDelta": delta,
-                }
-            },
+            "cycle": view,
+            "changes": {},
         }
         text = compose(row, rule, chop)
         if not text:
             continue
+        fifth = (view.get("ticks") or [None])[-1] or {}
         found.append(
             {
-                "at": int(point["timestamp"]),
+                "at": int(fifth.get("at") or start),
                 "symbol": symbol,
-                "snapshotAt": int(point["timestamp"]),
-                "oiValue": point["oiValue"],
-                "move": None if move is None else round(move, 4),
-                "pricePct": None if price_pct is None else round(price_pct, 4),
+                "snapshotAt": int(fifth.get("at") or start),
+                "oiValue": view.get("fifth"),
+                "move": None if view.get("oiValuePct") is None else round(view["oiValuePct"], 4),
+                "pricePct": None if view.get("pricePct") is None else round(view["pricePct"], 4),
                 "fact": text.split("。")[-1],
                 "text": text,
-                "window": rule["window"],
+                "window": "30m",
                 "announced": False,
                 "source": "replay",
             }

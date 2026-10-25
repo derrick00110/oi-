@@ -29,6 +29,16 @@ def row(symbol="BTCUSDT", base="BTC", move=6.5, oi_move=None, value_move=None, p
         "oiToMarketCapPct": 0.47,
         "fundingRate": funding,
         "changes": {"15m": change, "1h": change, "4h": change, "24h": change},
+        "cycle": {
+            "ready": True,
+            "count": 5,
+            "first": oi_value - value_delta,
+            "fifth": oi_value,
+            "oiValuePct": change["oiValuePct"],
+            "pricePct": price_move,
+            "oiValueDelta": value_delta,
+            "ticks": [],
+        },
     }
 
 
@@ -53,8 +63,10 @@ class BroadcastTest(unittest.TestCase):
         text = compose(band_row(), default_rules()[0])
         self.assertEqual(default_rules()[0]["metric"], "oiValuePct")
         self.assertIn("🟢 [BTCUSDT] 币安未平仓金额 +12.0%", text)
-        self.assertIn("过去 3600 秒价格上涨 6.0%", text)
-        self.assertIn("未平仓金额：750 万美元", text)
+        self.assertIn("第 1 次到第 5 次刻度价格上涨 6.0%", text)
+        self.assertIn("第 1 次刻度", text)
+        self.assertIn("第 5 次刻度 750 万美元", text)
+        self.assertNotIn("3600", text)
         self.assertIn("未平仓金额/市值比率：0.5%", text)
         self.assertIn("24 小时价格变动：-4.2%", text)
         self.assertIn("优先推报，做多信号", text)
@@ -91,6 +103,10 @@ class BroadcastTest(unittest.TestCase):
 
         crossed = compose(band_row(oi_value=20_100_000, value_delta=500_000, move=2.5, price_move=1), rule)
         self.assertIn("2000万关键分水岭", crossed)
+
+        waiting = band_row(oi_value=6_000_000, value_delta=1_000_000, move=20, price_move=10)
+        waiting["cycle"]["ready"] = False
+        self.assertIsNone(compose(waiting, rule))
 
     def test_forms_follow_notional_not_quantity(self):
         rule = loose_rule()
