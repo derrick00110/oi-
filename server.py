@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -147,28 +148,120 @@ def print_table(payload: dict, sort_key: str) -> None:
         print(f"有 {payload['errorCount']} 个合约拉取失败：{failed}")
 
 
+def stale_limit(value=None) -> float:
+    """Seconds without a finished scan before the watchdog acts. Default is 600."""
+    if value is None:
+        raw = os.environ.get("OI_SCAN_STALE_SEC", "").strip()
+        value = raw or "600"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        LOG.warning("OI_SCAN_STALE_SEC 无效，已用 600 秒")
+        return 600.0
+    if number < 30:
+        LOG.warning("OI_SCAN_STALE_SEC 太小，已用 30 秒")
+        return 30.0
+    return number
+
+
 class BroadcastLoop:
-    def __init__(self, monitor: Monitor, book: BroadcastBook):
+    def __init__(self, monitor: Monitor, book: BroadcastBook, stale_sec: float | None = None, recover_wait: float = 5):
         self.monitor = monitor
         self.book = book
         self.stop = threading.Event()
+        self.stale_sec = stale_limit(stale_sec)
+        self.recover_wait = recover_wait
+        self._lock = threading.Lock()
+        self.worker: threading.Thread | None = None
+        self.watchdog: threading.Thread | None = None
+        self.started_monotonic: float | None = None
+        self.last_success_monotonic: float | None = None
+        self.last_success_wall_ms: int | None = None
 
     def start(self) -> None:
-        threading.Thread(target=self._run, name="broadcast", daemon=True).start()
+        with self._lock:
+            if self.started_monotonic is None:
+                self.started_monotonic = time.monotonic()
+            if self.worker is None or not self.worker.is_alive():
+                self.worker = threading.Thread(target=self._run, name="broadcast", daemon=True)
+                self.worker.start()
+            if self.watchdog is None or not self.watchdog.is_alive():
+                self.watchdog = threading.Thread(target=self._watch, name="scan-watchdog", daemon=True)
+                self.watchdog.start()
+
+    def note_success(self) -> None:
+        with self._lock:
+            self.last_success_monotonic = time.monotonic()
+            self.last_success_wall_ms = int(time.time() * 1000)
+
+    def scan_status(self, now_monotonic: float | None = None) -> dict:
+        now_m = time.monotonic() if now_monotonic is None else now_monotonic
+        with self._lock:
+            started = self.started_monotonic
+            done = self.last_success_monotonic
+            wall = self.last_success_wall_ms
+            limit = self.stale_sec
+        if done is None:
+            age = None
+            stale = started is not None and (now_m - started) > limit
+        else:
+            age = max(0.0, now_m - done)
+            stale = age > limit
+        return {
+            "lastScanAt": wall,
+            "scanAgeSec": None if age is None else int(age),
+            "stale": stale,
+        }
+
+    def check_watchdog(self, exit_process=None) -> str:
+        """Restart a dead scan thread. A thread that is still stuck ends the process."""
+        if self.stop.is_set():
+            return "stopped"
+        status = self.scan_status()
+        if not status["stale"]:
+            return "ok"
+        worker = self.worker
+        alive = worker is not None and worker.is_alive()
+        if alive:
+            age = status["scanAgeSec"]
+            if age is None:
+                LOG.error("启动后超过 %.0f 秒仍没有完成扫描，扫描线程还卡着，退出进程", self.stale_sec)
+            else:
+                LOG.error("扫描已 %s 秒没有完成，线程还卡着，退出进程", age)
+            leave = os._exit if exit_process is None else exit_process
+            leave(1)
+            return "exit"
+        LOG.warning("扫描线程已退出，重新启动")
+        self.start()
+        return "restart"
+
+    def _watch(self) -> None:
+        while not self.stop.is_set():
+            if self.stop.wait(30):
+                return
+            try:
+                self.check_watchdog()
+            except Exception:  # noqa: BLE001 - the watchdog must keep watching
+                LOG.exception("扫描看门狗异常")
 
     def _run(self) -> None:
         first = True
         while not self.stop.is_set():
-            delay = seconds_until_scan(time.time())
-            if first and delay > 45:
-                self.tick()
-                if self.stop.is_set():
-                    return
+            try:
                 delay = seconds_until_scan(time.time())
-            first = False
-            if self.stop.wait(delay):
-                return
-            self.tick()
+                if first and delay > 45:
+                    self.tick()
+                    if self.stop.is_set():
+                        return
+                    delay = seconds_until_scan(time.time())
+                first = False
+                if self.stop.wait(delay):
+                    return
+                self.tick()
+            except Exception:  # noqa: BLE001 - a dead scan thread is how production went quiet
+                LOG.exception("播报循环异常，继续下一轮")
+                if self.recover_wait and self.stop.wait(self.recover_wait):
+                    return
 
     def tick(self) -> None:
         limit = self.book.settings.get("limit")
@@ -178,28 +271,32 @@ class BroadcastLoop:
             payload = self.monitor.scan(limit, fresh=True)
         except Exception as exc:  # noqa: BLE001 - keep the next round alive
             self.book.mark_scan(str(exc)[:240])
-            LOG.warning("播报扫描失败：%s", exc)
+            LOG.exception("播报扫描失败")
             try:
                 MEMORY.record_failure(int(time.time() * 1000), str(exc))
             except Exception:  # noqa: BLE001 - a backup failure must not stop the loop
                 LOG.exception("记忆备份失败")
             return
-        items = self.book.evaluate(payload.get("rows") or [], payload.get("snapshotAt"))
-        self.book.mark_scan("")
+        self.note_success()
         try:
-            MEMORY.record_scan(
-                self.book.qualify(payload.get("rows") or []),
-                items,
-                int(time.time() * 1000),
-                int(payload.get("requested") or 0),
-                int(payload.get("returned") or 0),
-            )
-        except Exception:  # noqa: BLE001 - a backup failure must not stop the loop
-            LOG.exception("记忆备份失败")
-        for item in items:
-            LOG.info("播报 %s", item["text"])
-        url, token = self.book.webhook_delivery()
-        queue_webhooks(url, items, token)
+            items = self.book.evaluate(payload.get("rows") or [], payload.get("snapshotAt"))
+            self.book.mark_scan("")
+            try:
+                MEMORY.record_scan(
+                    self.book.qualify(payload.get("rows") or []),
+                    items,
+                    int(time.time() * 1000),
+                    int(payload.get("requested") or 0),
+                    int(payload.get("returned") or 0),
+                )
+            except Exception:  # noqa: BLE001 - a backup failure must not stop the loop
+                LOG.exception("记忆备份失败")
+            for item in items:
+                LOG.info("播报 %s", item["text"])
+            url, token = self.book.webhook_delivery()
+            queue_webhooks(url, items, token)
+        except Exception:  # noqa: BLE001 - the scan itself finished; keep the loop
+            LOG.exception("播报处理失败")
 
 
 LOOP = BroadcastLoop(MONITOR, BOOK)
@@ -221,7 +318,8 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/trade/status":
                 self.trade_status()
             elif parsed.path == "/api/health":
-                self.send_json(200, {"ok": True, "broadcast": True, "autoTrade": False})
+                status = LOOP.scan_status()
+                self.send_json(200, {"ok": True, "broadcast": True, "autoTrade": False, **status})
             elif parsed.path == "/favicon.ico":
                 self.send_response(204)
                 self.end_headers()
@@ -375,6 +473,7 @@ def serve(host: str, port: int) -> None:
     shown = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     print(f"oi事实监测播报已启动： http://{shown}:{port}")
     print("每 5 分钟记刻度，每 30 分钟用第 1 次和第 5 次核实门槛后播报。不会自动下单。按 Ctrl+C 结束。")
+    print(f"扫描超过 {LOOP.stale_sec:.0f} 秒没有完成时，看门狗会重启扫描线程；线程若还卡着就退出进程。")
     print(f"每天的监测记录写在 {MEMORY.directory}")
     try:
         httpd.serve_forever()

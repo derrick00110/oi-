@@ -34,6 +34,73 @@ class RateLimited(BinanceError):
     pass
 
 
+HTTP_ATTEMPTS = 4
+MAX_HTTP_BYTES = 8_000_000
+DEFAULT_HTTP_TIMEOUT = 20.0
+
+
+def _positive_timeout(timeout) -> float:
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError):
+        value = DEFAULT_HTTP_TIMEOUT
+    if value <= 0:
+        return DEFAULT_HTTP_TIMEOUT
+    return min(value, 120.0)
+
+
+def _read_limited(response, limit: int) -> bytes:
+    chunks = []
+    size = 0
+    while size <= limit:
+        part = response.read(min(65536, limit - size + 1))
+        if not part:
+            break
+        size += len(part)
+        if size > limit:
+            raise BinanceError("币安响应过大")
+        chunks.append(part)
+    return b"".join(chunks)
+
+
+def _run_bounded(fn, timeout: float):
+    """Run fn on a daemon thread so DNS, connect, and read all share one deadline."""
+    box: dict = {}
+
+    def run() -> None:
+        try:
+            box["value"] = fn()
+        except Exception as exc:  # noqa: BLE001 - handed back to the caller
+            box["error"] = exc
+
+    thread = threading.Thread(target=run, name="binance-http", daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if "error" in box:
+        raise box["error"]
+    if "value" in box:
+        return box["value"]
+    raise BinanceError(f"请求超过 {timeout:g} 秒")
+
+
+def read_http(request: urllib.request.Request, timeout: float, limit: int = MAX_HTTP_BYTES) -> bytes:
+    """GET/POST with a socket timeout and a hard deadline around the whole call."""
+    timeout = _positive_timeout(timeout)
+
+    def attempt() -> bytes:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return _read_limited(response, limit)
+        except urllib.error.HTTPError as exc:
+            try:
+                exc.body_bytes = _read_limited(exc, limit)
+            except Exception:  # noqa: BLE001 - the status still has to surface
+                exc.body_bytes = b""
+            raise
+
+    return _run_bounded(attempt, timeout)
+
+
 class Limiter:
     """Local guard for the open-interest history route (1000 requests / 5 min)."""
 
@@ -98,11 +165,12 @@ class BinanceClient:
             self._exchange_at = time.monotonic()
         return data
 
-    def get_json(self, path: str, params: dict | None = None, timeout: float = 20):
+    def get_json(self, path: str, params: dict | None = None, timeout: float = DEFAULT_HTTP_TIMEOUT):
         self.ensure()
-        delay = 0.8
+        timeout = _positive_timeout(timeout)
+        delay = 0.5
         last = None
-        for attempt in range(4):
+        for attempt in range(HTTP_ATTEMPTS):
             saw_rate_limit = False
             for base in self._bases():
                 try:
@@ -122,9 +190,9 @@ class BinanceClient:
                 with self._lock:
                     self.base = base
                 return data
-            if saw_rate_limit and attempt < 3:
+            if saw_rate_limit and attempt + 1 < HTTP_ATTEMPTS:
                 time.sleep(delay)
-                delay *= 2
+                delay = min(delay * 2, 4)
                 continue
             break
         raise BinanceError(_explain(last))
@@ -146,20 +214,21 @@ class BinanceClient:
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                raw = response.read()
+            raw = read_http(request, timeout)
         except urllib.error.HTTPError as exc:
-            try:
-                body = exc.read().decode("utf-8", "replace")
-            except Exception:  # noqa: BLE001
-                body = ""
+            raw_body = getattr(exc, "body_bytes", None)
+            if not isinstance(raw_body, (bytes, bytearray)):
+                raw_body = b""
+            body = raw_body.decode("utf-8", "replace")
             if exc.code == 451 or "restricted location" in body:
                 raise Restricted(body or "restricted location") from exc
             if exc.code in (429, 418):
                 raise RateLimited(body or f"HTTP {exc.code}") from exc
             raise BinanceError(f"HTTP {exc.code} {path}: {body[:180]}", status=exc.code) from exc
-        except urllib.error.URLError as exc:
-            raise BinanceError(f"网络错误：{exc.reason}") from exc
+        except BinanceError:
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise BinanceError(f"网络错误：{exc}") from exc
         text = raw.lstrip()
         if text.startswith(b"<") or b"restricted location" in text:
             snippet = text[:180].decode("utf-8", "replace")
