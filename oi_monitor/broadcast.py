@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import threading
 import time
 import urllib.error
@@ -14,6 +16,8 @@ from oi_monitor.metrics import judge, screen_change
 
 SCAN_PERIOD_SEC = 300
 SCAN_LAG_SEC = 90
+WEBHOOK_TOKEN_LIMIT = 4096
+LOG = logging.getLogger("oi-monitor")
 
 WINDOWS = {"15m": "15分钟", "1h": "1小时", "4h": "4小时", "24h": "24小时"}
 WINDOW_SECONDS = {"15m": 900, "1h": 3600, "4h": 14400, "24h": 86400}
@@ -56,6 +60,7 @@ def default_settings() -> dict:
         "intervalSec": 60,
         "maxPerRound": 20,
         "webhookUrl": "",
+        "webhookToken": "",
         "priceChopPct": 0.5,
     }
 
@@ -175,6 +180,12 @@ def clean_settings(raw: dict, current: dict) -> dict:
         if len(webhook) > 500:
             raise ValueError("Webhook 地址过长")
         merged["webhookUrl"] = webhook
+    if "webhookToken" in raw:
+        incoming = _clean_webhook_token(raw.get("webhookToken"))
+        current = str(merged.get("webhookToken") or "")
+        # The public API returns a mask. Posting that mask back must not replace the secret.
+        if not (incoming and incoming == mask_token(current)):
+            merged["webhookToken"] = incoming
     if "priceChopPct" in raw:
         try:
             chop = float(raw["priceChopPct"])
@@ -192,6 +203,76 @@ def mask_webhook(url: str) -> str:
     parts = urllib.parse.urlsplit(url)
     query = "***" if parts.query else ""
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
+
+
+def mask_token(token: str) -> str:
+    """Hide a webhook secret the same way the URL query is hidden: keep the shape, replace the secret with ***."""
+    if not token:
+        return ""
+    if str(token).startswith("Bearer "):
+        return "Bearer ***"
+    return "***"
+
+
+def _clean_webhook_token(raw) -> str:
+    if isinstance(raw, (bool, dict, list, bytes)):
+        raise ValueError("Webhook 令牌无效")
+    token = str(raw or "").strip()
+    if not token:
+        return ""
+    if len(token) > WEBHOOK_TOKEN_LIMIT:
+        raise ValueError("Webhook 令牌过长")
+    if authorization_value(token) is None:
+        raise ValueError("Webhook 令牌无效")
+    return token
+
+
+def authorization_value(token: str) -> str | None:
+    """Return the Authorization header value, or None when there is nothing safe to send."""
+    cleaned = str(token or "").strip()
+    if not cleaned:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in cleaned):
+        return None
+    try:
+        cleaned.encode("latin-1")
+    except UnicodeEncodeError:
+        return None
+    if cleaned.startswith("Bearer "):
+        return cleaned
+    return f"Bearer {cleaned}"
+
+
+def apply_webhook_env(settings: dict) -> dict:
+    """Apply OI_WEBHOOK_URL and OI_WEBHOOK_TOKEN over saved settings. Invalid values are skipped."""
+    merged = dict(settings)
+    url = os.environ.get("OI_WEBHOOK_URL", "").strip()
+    token = os.environ.get("OI_WEBHOOK_TOKEN", "").strip()
+    if url:
+        try:
+            merged = clean_settings({"webhookUrl": url}, merged)
+        except ValueError:
+            LOG.warning("OI_WEBHOOK_URL 无效，已忽略")
+    if token:
+        try:
+            merged = clean_settings({"webhookToken": token}, merged)
+        except ValueError:
+            LOG.warning("OI_WEBHOOK_TOKEN 无效，已忽略")
+    return merged
+
+
+def _redact(text: str, token: str) -> str:
+    secret = str(token or "").strip()
+    redacted = text or ""
+    if secret:
+        redacted = redacted.replace(secret, "***")
+        if secret.startswith("Bearer "):
+            inner = secret[len("Bearer ") :]
+            if inner:
+                redacted = redacted.replace(inner, "***")
+        else:
+            redacted = redacted.replace(f"Bearer {secret}", "Bearer ***")
+    return " ".join(redacted.split())[:180]
 
 
 def signed_pct(value) -> str:
@@ -374,6 +455,7 @@ class BroadcastBook:
                 self.settings = clean_settings(settings, default_settings())
             except ValueError:
                 self.settings = default_settings()
+        self.settings = apply_webhook_env(self.settings)
         if isinstance(state, dict):
             items = state.get("items") or []
             self.items = [item for item in items if isinstance(item, dict)][-5000:]
@@ -476,9 +558,12 @@ class BroadcastBook:
 
     def public_settings(self) -> dict:
         settings = dict(self.settings)
-        webhook = settings.get("webhookUrl") or ""
+        webhook = str(settings.get("webhookUrl") or "")
+        token = str(settings.get("webhookToken") or "")
         settings["webhookSet"] = bool(webhook)
         settings["webhookUrl"] = mask_webhook(webhook)
+        settings["webhookTokenSet"] = bool(token)
+        settings["webhookToken"] = mask_token(token)
         return settings
 
     def snapshot(self) -> dict:
@@ -501,6 +586,13 @@ class BroadcastBook:
         with self._lock:
             return str(self.settings.get("webhookUrl") or "")
 
+    def webhook_delivery(self) -> tuple[str, str]:
+        with self._lock:
+            return (
+                str(self.settings.get("webhookUrl") or ""),
+                str(self.settings.get("webhookToken") or ""),
+            )
+
     def _write_state(self) -> None:
         self._write_json(
             "broadcasts.json",
@@ -521,26 +613,48 @@ class BroadcastBook:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def post_webhook(url: str, item: dict, timeout: float = 5) -> None:
+def post_webhook(url: str, item: dict, timeout: float = 5, token: str = "") -> None:
     body = json.dumps(
         {"text": item["text"], "symbol": item["symbol"], "id": item["id"]},
         ensure_ascii=False,
     ).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json; charset=utf-8", "User-Agent": "oi-monitor"},
-        method="POST",
-    )
+    headers = {"Content-Type": "application/json; charset=utf-8", "User-Agent": "oi-monitor"}
+    if str(token or "").strip():
+        auth = authorization_value(token)
+        if not auth:
+            raise ValueError("Webhook 令牌无效")
+        headers["Authorization"] = auth
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(request, timeout=timeout) as response:
         response.read()
 
 
-def deliver_webhook(url: str, item: dict) -> str | None:
+def deliver_webhook(url: str, item: dict, token: str = "") -> str | None:
     if not url:
         return None
     try:
-        post_webhook(url, item)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return str(exc)[:180]
+        post_webhook(url, item, token=token)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        return _redact(str(exc), token)[:180]
     return None
+
+
+def queue_webhooks(url: str, items: list[dict], token: str = "") -> threading.Thread | None:
+    """POST broadcasts off the scan thread. Failures are logged without the token."""
+    if not url or not items:
+        return None
+    pending = [dict(item) for item in items]
+    secret = str(token or "")
+
+    def run() -> None:
+        for item in pending:
+            try:
+                error = deliver_webhook(url, item, secret)
+            except Exception:
+                error = "发送失败"
+            if error:
+                LOG.warning("webhook 发送失败：%s", _redact(error, secret))
+
+    thread = threading.Thread(target=run, name="webhook", daemon=True)
+    thread.start()
+    return thread
