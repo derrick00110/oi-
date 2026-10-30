@@ -13,7 +13,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from oi_monitor.broadcast import BroadcastBook, deliver_webhook, seconds_until_scan
+from oi_monitor.broadcast import BroadcastBook, queue_webhooks, seconds_until_scan
 from oi_monitor.client import BinanceError
 from oi_monitor.memory import DayMemory
 from oi_monitor.metrics import attach_reads, parse_limit, screen_change
@@ -196,11 +196,10 @@ class BroadcastLoop:
             )
         except Exception:  # noqa: BLE001 - a backup failure must not stop the loop
             LOG.exception("记忆备份失败")
-        url = self.book.webhook_target()
         for item in items:
             LOG.info("播报 %s", item["text"])
-            if deliver_webhook(url, item):
-                LOG.warning("webhook 发送失败")
+        url, token = self.book.webhook_delivery()
+        queue_webhooks(url, items, token)
 
 
 LOOP = BroadcastLoop(MONITOR, BOOK)

@@ -80,6 +80,36 @@ python3 server.py --once --limit 30
 
 绿点是优先做多，或这 5 次刻度里未平仓金额翻倍。其余形态是白点。
 
+## Webhook
+
+每条播报可以再 POST 到你自己的接收地址。没配地址就不会发。请求体始终是这三项，没有令牌也不会多带字段：
+
+```json
+{"text": "播报原文", "symbol": "BTCUSDT", "id": 1}
+```
+
+接收端要求 `Authorization: Bearer <key>` 时，再配一个令牌。令牌放进 `Authorization`。它如果已经以 `Bearer ` 开头，不会再加一次前缀。
+
+环境变量在进程启动时读入，并覆盖 `data/settings.json` 里已经保存的同名字段。地址只接受 http 或 https。启动之后如果再保存别的设置，当前生效的地址和令牌会一起写进这个文件；文件只在本机，接口响应里仍然是打码的。
+
+```bash
+export OI_WEBHOOK_URL=https://example.com/hooks/oi
+export OI_WEBHOOK_TOKEN=your-secret
+python3 server.py
+```
+
+运行中也可以改，对之后的播报立刻生效：
+
+```bash
+curl -s -X POST http://127.0.0.1:8765/api/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"webhookUrl":"https://example.com/hooks/oi","webhookToken":"your-secret"}'
+```
+
+`/api/settings` 和 `/api/broadcasts` 返回的 `webhookUrl`、`webhookToken` 都是打码的：地址上的查询串换成 `***`，令牌换成 `***`（本来就带 `Bearer ` 时显示成 `Bearer ***`）。`webhookSet` 和 `webhookTokenSet` 表示有没有配置。把打码后的令牌原样提交不会盖掉已保存的值；传空字符串会清除。令牌不会出现在日志里。
+
+发送放在后台，不挡住每 5 分钟的扫描。某条没送出去就记一行失败日志，日志里没有令牌；这一轮扫描照常结束，下一轮继续。
+
 ## 手动下单
 
 下单接口只接受本机访问。默认 `TRADING_ENABLED` 不打开，播报线程不会发单。需要连你自己的账户时再说，公开监测用不到 API Key。
