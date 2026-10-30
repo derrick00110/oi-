@@ -341,7 +341,7 @@ class ScanLoopWebhookTest(unittest.TestCase):
             book.evaluate = lambda *args, **kwargs: [_item()]
 
             class Monitor:
-                def scan(self, limit, fresh=True):
+                def scan(self, limit, fresh=True, cycle=None):
                     return {"rows": [], "snapshotAt": 1, "requested": 1, "returned": 0}
 
             loop = BroadcastLoop(Monitor(), book)
@@ -379,7 +379,7 @@ class ScanLoopWebhookTest(unittest.TestCase):
             book.evaluate = lambda *args, **kwargs: [_item(1), _item(2)]
 
             class Monitor:
-                def scan(self, limit, fresh=True):
+                def scan(self, limit, fresh=True, cycle=None):
                     return {"rows": [], "snapshotAt": 1, "requested": 1, "returned": 0}
 
             loop = BroadcastLoop(Monitor(), book)
