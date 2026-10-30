@@ -66,7 +66,48 @@ python3 server.py --once --limit 30
 
 ## 播报
 
-未平仓历史是 5 分钟一根。每 5 分钟拉一次，记下这一轮的刻度。30 分钟为一轮，前 25 分钟记下 5 次，最后 5 分钟只用第 1 次和第 5 次核实门槛。未平仓金额和价格都是 (第 5 次 − 第 1 次) / 第 1 次。中间三次只显示，不参与门槛。过线才播这一轮。
+未平仓历史是 5 分钟一根。扫描也按这个节奏，在每根 K 线收盘后约 90 秒拉一次。不改成每分钟拉，是因为未平仓历史这条线 5 分钟只有大约 1000 次额度，全市场一轮就会顶满。
+
+第 1 次刻度有两种起法，用 `cycleMode` 选。
+
+- `clock`：卡在每个整点和半点。从 :00 或 :30 起每 5 分钟记一次，记满 5 次，第 5 次那根收盘后再跟第 1 次比。这是原来的算法。
+- `trigger`：不等整点。某一根已经收盘的 5 分钟 K 线满足下面任一条件，就把这根记成第 1 次。之后仍然每 5 分钟记一次，第 5 次（触发后第 20 分钟那根）收盘后再跟第 1 次比。同一合约触发后 30 分钟内不会再次触发。24 小时成交额不到 500 万美元的合约不参加。
+
+触发条件，默认值写在括号里：
+
+- 价格：这根收盘价偏离前 20 根 5 分钟收盘价均线至少 `triggerPricePct`（1.5%），并且这根的成交额至少是前 20 根平均成交额的 `triggerVolumeMult` 倍（2）。
+- 未平仓金额：相对上一根，`sumOpenInterestValue` 的绝对值变化至少 `triggerOiPct`（3%）。未平仓金额已经不少于 `triggerOiLargeUsd`（1000 万美元）时，改用更低的 `triggerOiPctLarge`（2%）。看的是金额，不是合约张数。
+
+比较的仍是第 1 次和第 5 次的未平仓金额、价格。15%、10%、5% 的分档，四种形态，翻倍，2000 万分水岭，冷却和每轮条数上限都不变。中间三次只显示。
+
+默认是 `clock`。近 7 天、成交额前 400 的回测里，触发模式中位并没有更早，命中率也没有更高，所以不把它改成默认。明细在 `docs/backtest-trigger.md`。要试触发模式：
+
+```bash
+export OI_CYCLE_MODE=trigger
+```
+
+其他阈值也是环境变量，启动时覆盖已经保存的设置：
+
+```bash
+export OI_CYCLE_MODE=clock
+export OI_TRIGGER_PRICE_PCT=1.5
+export OI_TRIGGER_VOLUME_MULT=2
+export OI_TRIGGER_OI_PCT=3
+export OI_TRIGGER_OI_PCT_LARGE=2
+export OI_TRIGGER_OI_LARGE_USD=10000000
+export OI_TRIGGER_MIN_QUOTE_VOLUME=5000000
+export OI_TRIGGER_REARM_MIN=30
+```
+
+运行中也可以改，下一轮扫描生效：
+
+```bash
+curl -s -X POST http://127.0.0.1:8765/api/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"cycleMode":"trigger","triggerPricePct":1.5,"triggerVolumeMult":2,"triggerOiPct":3}'
+```
+
+触发模式会为每个合约多要 48 根 5 分钟 K 线，用来算均线和成交额。K 线走的是行情权重，不占未平仓历史那 1000 次。时钟模式不拉 K 线。
 
 页面仍然每 60 秒刷新。勾选「语音播报」后，新消息会用浏览器中文语音读出来。打开页面时不会把历史消息再读一遍。
 

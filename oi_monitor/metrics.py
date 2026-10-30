@@ -49,6 +49,30 @@ def normalize(raw) -> list[dict]:
     return [dedup[key] for key in sorted(dedup)]
 
 
+def parse_klines(raw) -> list[dict]:
+    """Turn Binance kline rows into sorted 5-minute closes and quote volumes."""
+    if not isinstance(raw, list):
+        raise ValueError("klines 返回的不是数组")
+    rows = []
+    for item in raw:
+        if not isinstance(item, (list, tuple)) or len(item) < 8:
+            continue
+        try:
+            rows.append(
+                {
+                    "timestamp": int(item[0]),
+                    "close": float(item[4]),
+                    "quoteVolume": float(item[7]),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    dedup: dict[int, dict] = {}
+    for row in rows:
+        dedup[row["timestamp"]] = row
+    return [dedup[key] for key in sorted(dedup)]
+
+
 def point_at(series: list[dict], latest_ts: int, minutes: int, bar_minutes: int = BAR_MINUTES):
     """Latest point at or before latest_ts - minutes, if it is close enough."""
     target = latest_ts - minutes * 60_000
@@ -143,6 +167,8 @@ def cycle_view(series: list[dict], now_ms: int | None = None) -> dict:
         "oiValuePct": None,
         "pricePct": None,
         "oiValueDelta": None,
+        "mode": "clock",
+        "trigger": None,
     }
     if not series:
         return empty
@@ -179,6 +205,8 @@ def cycle_view(series: list[dict], now_ms: int | None = None) -> dict:
         "oiValuePct": oi_pct,
         "pricePct": price_pct,
         "oiValueDelta": delta,
+        "mode": "clock",
+        "trigger": None,
     }
 
 
@@ -205,10 +233,22 @@ def _public_cycle(cycle: dict) -> dict:
         "oiValuePct": _round(cycle["oiValuePct"], 4),
         "pricePct": _round(cycle["pricePct"], 4),
         "oiValueDelta": _round(cycle["oiValueDelta"], 2),
+        "mode": cycle.get("mode") or "clock",
+        "trigger": cycle.get("trigger"),
     }
 
 
-def build_row(symbol: str, base: str, volume_rank: int, ticker: dict, series: list[dict], premium: dict | None = None, now_ms: int | None = None) -> dict | None:
+def build_row(
+    symbol: str,
+    base: str,
+    volume_rank: int,
+    ticker: dict,
+    series: list[dict],
+    premium: dict | None = None,
+    now_ms: int | None = None,
+    klines: list[dict] | None = None,
+    cycle_params: dict | None = None,
+) -> dict | None:
     if not series:
         return None
     latest = series[-1]
@@ -235,9 +275,22 @@ def build_row(symbol: str, base: str, volume_rank: int, ticker: dict, series: li
         "nextFundingTime": next_funding,
         "snapshotAt": latest["timestamp"],
         "changes": _round_changes(changes_for(series)),
-        "cycle": _public_cycle(cycle_view(series, int(time.time() * 1000) if now_ms is None else now_ms)),
+        "cycle": _public_cycle(_cycle_for_row(series, ticker, klines, now_ms, cycle_params)),
         "spark": [round(point["oiValue"], 2) for point in series],
     }
+
+
+def _cycle_for_row(series, ticker, klines, now_ms, cycle_params):
+    now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    if (cycle_params or {}).get("mode") == "trigger":
+        from oi_monitor.trigger import trigger_cycle_view
+
+        try:
+            quote = float(ticker.get("quoteVolume") or 0)
+        except (TypeError, ValueError):
+            quote = 0.0
+        return trigger_cycle_view(series, klines or [], now, cycle_params, quote_volume_24h=quote)
+    return cycle_view(series, now)
 
 
 def usdt_perpetuals(exchange_info: dict) -> dict[str, str]:
@@ -355,9 +408,13 @@ def attach_reads(rows: list[dict], chop_pct: float) -> list[dict]:
             )
         else:
             count = int(cycle.get("count") or 0)
+            if cycle.get("mode") == "trigger":
+                pending = f"刻度 {count}/5，触发后第 5 次再核实"
+            else:
+                pending = f"刻度 {count}/5，最后 5 分钟再核实"
             item["cycleRead"] = {
                 "code": "pending",
-                "text": f"刻度 {count}/5，最后 5 分钟再核实",
+                "text": pending,
                 "bias": "flat",
                 "qualified": False,
             }

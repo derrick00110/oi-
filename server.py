@@ -175,7 +175,7 @@ class BroadcastLoop:
         if limit is not None:
             limit = int(limit)
         try:
-            payload = self.monitor.scan(limit, fresh=True)
+            payload = self.monitor.scan(limit, fresh=True, cycle=self.book.cycle_params())
         except Exception as exc:  # noqa: BLE001 - keep the next round alive
             self.book.mark_scan(str(exc)[:240])
             LOG.warning("播报扫描失败：%s", exc)
@@ -321,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(exc)})
             return
         try:
-            payload = MONITOR.scan(limit, fresh=fresh)
+            payload = MONITOR.scan(limit, fresh=fresh, cycle=BOOK.cycle_params())
         except BinanceError as exc:
             self.send_json(502, {"error": str(exc)})
             return
@@ -374,7 +374,10 @@ def serve(host: str, port: int) -> None:
     LOOP.start()
     shown = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     print(f"oi事实监测播报已启动： http://{shown}:{port}")
-    print("每 5 分钟记刻度，每 30 分钟用第 1 次和第 5 次核实门槛后播报。不会自动下单。按 Ctrl+C 结束。")
+    if BOOK.settings.get("cycleMode") == "trigger":
+        print("触发模式：价格或未平仓金额异动才开始第 1 次刻度，第 5 次收盘后再核实。不会自动下单。按 Ctrl+C 结束。")
+    else:
+        print("每 5 分钟记刻度，每 30 分钟用第 1 次和第 5 次核实门槛后播报。不会自动下单。按 Ctrl+C 结束。")
     print(f"每天的监测记录写在 {MEMORY.directory}")
     try:
         httpd.serve_forever()
@@ -403,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.once:
         try:
-            payload = MONITOR.scan(limit, fresh=args.fresh)
+            payload = MONITOR.scan(limit, fresh=args.fresh, cycle=BOOK.cycle_params())
         except BinanceError as exc:
             print(exc, file=sys.stderr)
             return 1

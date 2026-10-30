@@ -8,7 +8,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from oi_monitor.client import BinanceClient, BinanceError
-from oi_monitor.metrics import build_row, index_premium, index_tickers, normalize, usdt_perpetuals
+from oi_monitor.metrics import build_row, index_premium, index_tickers, normalize, parse_klines, usdt_perpetuals
+from oi_monitor.trigger import KLINE_LIMIT
 
 log = logging.getLogger("oi-monitor")
 
@@ -24,8 +25,9 @@ class Monitor:
         self._inflight: dict[int, threading.Event] = {}
         self._fail: dict[int, Exception] = {}
 
-    def scan(self, limit: int | None, fresh: bool = False) -> dict:
-        key = 0 if limit is None else limit
+    def scan(self, limit: int | None, fresh: bool = False, cycle: dict | None = None) -> dict:
+        limit_key = 0 if limit is None else limit
+        key = (limit_key, _cycle_token(cycle))
         with self._lock:
             if not fresh:
                 cached = self._fresh_hit(key)
@@ -51,10 +53,10 @@ class Monitor:
                 raise BinanceError(str(failure))
             raise BinanceError("扫描失败，请重试")
         try:
-            payload = self._scan_uncached(limit)
+            payload = self._scan_uncached(limit, cycle)
             if not payload["rows"]:
                 ttl = 5
-            elif key == 0 or key >= 300:
+            elif limit_key == 0 or limit_key >= 300:
                 # Longer than the 5-minute broadcast pull, so the page does not start a second scan.
                 ttl = 420
             elif key > 200:
@@ -90,7 +92,7 @@ class Monitor:
         out["cacheAgeMs"] = 0 if not cached else int((time.monotonic() - stored_at) * 1000)
         return out
 
-    def _scan_uncached(self, limit: int | None) -> dict:
+    def _scan_uncached(self, limit: int | None, cycle: dict | None = None) -> dict:
         started = time.perf_counter()
         with ThreadPoolExecutor(max_workers=3) as pool:
             info_future = pool.submit(self.client.exchange_info)
@@ -124,27 +126,33 @@ class Monitor:
         workers = 8 if len(chosen) > 200 else 10
         rows = []
         errors = []
+        kline_errors = []
+        trigger_mode = (cycle or {}).get("mode") == "trigger"
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [
-                pool.submit(self._one, symbol, base, rank, ticker, premium.get(symbol))
+                pool.submit(self._one, symbol, base, rank, ticker, premium.get(symbol), cycle if trigger_mode else None)
                 for rank, (_volume, symbol, base, ticker) in enumerate(chosen, start=1)
             ]
             for future in as_completed(futures):
-                symbol, row, error = future.result()
+                symbol, row, error, kline_error = future.result()
                 if row is not None:
                     rows.append(row)
                 elif error:
                     errors.append({"symbol": symbol, "message": error[:180]})
+                if kline_error:
+                    kline_errors.append(symbol)
         rows.sort(key=lambda row: row["volumeRank"])
         snapshot_at = max((row["snapshotAt"] for row in rows), default=None)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         log.info(
-            "scanned %s/%s symbols in %sms via %s errors=%s",
+            "scanned %s/%s symbols in %sms via %s errors=%s klineErrors=%s mode=%s",
             len(rows),
             len(chosen),
             elapsed_ms,
             self.client.base,
             len(errors),
+            len(kline_errors),
+            "trigger" if trigger_mode else "clock",
         )
         return {
             "updatedAt": int(time.time() * 1000),
@@ -170,7 +178,7 @@ class Monitor:
                     best = (stored_at, row)
         return None if best is None else best[1]
 
-    def _one(self, symbol: str, base: str, rank: int, ticker: dict, premium: dict | None):
+    def _one(self, symbol: str, base: str, rank: int, ticker: dict, premium: dict | None, cycle: dict | None = None):
         try:
             raw = self.client.get_json(
                 "/futures/data/openInterestHist",
@@ -179,10 +187,45 @@ class Monitor:
             )
             if isinstance(raw, dict):
                 message = str(raw.get("msg") or raw.get("code") or "未平仓合约历史返回异常")
-                return symbol, None, message
-            row = build_row(symbol, base, rank, ticker, normalize(raw), premium)
+                return symbol, None, message, None
+            klines = None
+            kline_error = None
+            if cycle and cycle.get("mode") == "trigger":
+                klines, kline_error = self._klines(symbol)
+            row = build_row(symbol, base, rank, ticker, normalize(raw), premium, klines=klines, cycle_params=cycle)
             if row is None:
-                return symbol, None, "没有未平仓合约历史"
-            return symbol, row, None
+                return symbol, None, "没有未平仓合约历史", kline_error
+            return symbol, row, None, kline_error
         except Exception as exc:  # noqa: BLE001 - one symbol must not fail the scan
-            return symbol, None, str(exc)
+            return symbol, None, str(exc), None
+
+    def _klines(self, symbol: str) -> tuple[list[dict], str | None]:
+        try:
+            raw = self.client.get_json(
+                "/fapi/v1/klines",
+                {"symbol": symbol, "interval": HIST_PERIOD, "limit": KLINE_LIMIT},
+                timeout=15,
+            )
+        except Exception as exc:  # noqa: BLE001 - price trigger is optional for this scan
+            return [], str(exc)[:180]
+        if not isinstance(raw, list):
+            return [], "k线返回异常"
+        try:
+            return parse_klines(raw), None
+        except ValueError as exc:
+            return [], str(exc)[:180]
+
+
+def _cycle_token(cycle: dict | None):
+    if not cycle or cycle.get("mode") != "trigger":
+        return "clock"
+    return (
+        "trigger",
+        cycle.get("pricePct"),
+        cycle.get("volumeMult"),
+        cycle.get("oiPct"),
+        cycle.get("oiPctLarge"),
+        cycle.get("oiLargeUsd"),
+        cycle.get("minQuoteVolume"),
+        cycle.get("rearmMs"),
+    )

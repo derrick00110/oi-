@@ -17,6 +17,8 @@ from oi_monitor.metrics import judge, screen_change
 SCAN_PERIOD_SEC = 300
 SCAN_LAG_SEC = 90
 WEBHOOK_TOKEN_LIMIT = 4096
+# Clock stays the default until docs/backtest-trigger.md shows trigger mode is worth it.
+DEFAULT_CYCLE_MODE = "clock"
 LOG = logging.getLogger("oi-monitor")
 
 WINDOWS = {"15m": "15分钟", "1h": "1小时", "4h": "4小时", "24h": "24小时"}
@@ -62,6 +64,14 @@ def default_settings() -> dict:
         "webhookUrl": "",
         "webhookToken": "",
         "priceChopPct": 0.5,
+        "cycleMode": DEFAULT_CYCLE_MODE,
+        "triggerPricePct": 1.5,
+        "triggerVolumeMult": 2.0,
+        "triggerOiPct": 3.0,
+        "triggerOiPctLarge": 2.0,
+        "triggerOiLargeUsd": 10_000_000,
+        "triggerMinQuoteVolume": 5_000_000,
+        "triggerRearmMin": 30,
     }
 
 
@@ -194,7 +204,35 @@ def clean_settings(raw: dict, current: dict) -> dict:
         if not 0.05 <= chop <= 20:
             raise ValueError("价格震荡带需要在 0.05% 到 20% 之间")
         merged["priceChopPct"] = round(chop, 4)
+    if "cycleMode" in raw:
+        mode = str(raw.get("cycleMode") or "").strip().lower()
+        if mode not in {"clock", "trigger"}:
+            raise ValueError("周期模式只能是 clock 或 trigger")
+        merged["cycleMode"] = mode
+    _clean_trigger_numbers(raw, merged)
     return merged
+
+
+def _clean_trigger_numbers(raw: dict, merged: dict) -> None:
+    bounds = {
+        "triggerPricePct": (0.1, 50, 4, False, "价格偏离阈值需要在 0.1% 到 50% 之间"),
+        "triggerVolumeMult": (0.1, 100, 4, False, "成交额倍数需要在 0.1 到 100 之间"),
+        "triggerOiPct": (0.1, 500, 4, False, "未平仓金额触发阈值需要在 0.1% 到 500% 之间"),
+        "triggerOiPctLarge": (0.1, 500, 4, False, "大额未平仓触发阈值需要在 0.1% 到 500% 之间"),
+        "triggerOiLargeUsd": (0, 1_000_000_000_000, 0, True, "大额未平仓金额门槛无效"),
+        "triggerMinQuoteVolume": (0, 1_000_000_000_000, 0, True, "24 小时成交额门槛无效"),
+        "triggerRearmMin": (5, 240, 0, True, "再次触发间隔需要在 5 到 240 分钟之间"),
+    }
+    for key, (low, high, digits, as_int, message) in bounds.items():
+        if key not in raw:
+            continue
+        try:
+            value = float(raw[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(message) from exc
+        if not low <= value <= high:
+            raise ValueError(message)
+        merged[key] = int(value) if as_int else round(value, digits)
 
 
 def mask_webhook(url: str) -> str:
@@ -258,6 +296,35 @@ def apply_webhook_env(settings: dict) -> dict:
             merged = clean_settings({"webhookToken": token}, merged)
         except ValueError:
             LOG.warning("OI_WEBHOOK_TOKEN 无效，已忽略")
+    return merged
+
+
+def apply_cycle_env(settings: dict) -> dict:
+    """Apply cycle mode and trigger thresholds. Invalid values are skipped."""
+    merged = dict(settings)
+    mode = os.environ.get("OI_CYCLE_MODE", "").strip().lower()
+    if mode:
+        try:
+            merged = clean_settings({"cycleMode": mode}, merged)
+        except ValueError:
+            LOG.warning("OI_CYCLE_MODE 无效，已忽略")
+    numbers = {
+        "OI_TRIGGER_PRICE_PCT": "triggerPricePct",
+        "OI_TRIGGER_VOLUME_MULT": "triggerVolumeMult",
+        "OI_TRIGGER_OI_PCT": "triggerOiPct",
+        "OI_TRIGGER_OI_PCT_LARGE": "triggerOiPctLarge",
+        "OI_TRIGGER_OI_LARGE_USD": "triggerOiLargeUsd",
+        "OI_TRIGGER_MIN_QUOTE_VOLUME": "triggerMinQuoteVolume",
+        "OI_TRIGGER_REARM_MIN": "triggerRearmMin",
+    }
+    for env_name, key in numbers.items():
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            continue
+        try:
+            merged = clean_settings({key: float(raw)}, merged)
+        except ValueError:
+            LOG.warning("%s 无效，已忽略", env_name)
     return merged
 
 
@@ -456,6 +523,7 @@ class BroadcastBook:
             except ValueError:
                 self.settings = default_settings()
         self.settings = apply_webhook_env(self.settings)
+        self.settings = apply_cycle_env(self.settings)
         if isinstance(state, dict):
             items = state.get("items") or []
             self.items = [item for item in items if isinstance(item, dict)][-5000:]
@@ -585,6 +653,20 @@ class BroadcastBook:
     def webhook_target(self) -> str:
         with self._lock:
             return str(self.settings.get("webhookUrl") or "")
+
+    def cycle_params(self) -> dict:
+        with self._lock:
+            settings = self.settings
+            return {
+                "mode": str(settings.get("cycleMode") or DEFAULT_CYCLE_MODE),
+                "pricePct": float(settings.get("triggerPricePct") or 1.5),
+                "volumeMult": float(settings.get("triggerVolumeMult") or 2),
+                "oiPct": float(settings.get("triggerOiPct") or 3),
+                "oiPctLarge": float(settings.get("triggerOiPctLarge") or 2),
+                "oiLargeUsd": float(settings.get("triggerOiLargeUsd") or 10_000_000),
+                "minQuoteVolume": float(settings.get("triggerMinQuoteVolume") or 5_000_000),
+                "rearmMs": int(float(settings.get("triggerRearmMin") or 30) * 60_000),
+            }
 
     def webhook_delivery(self) -> tuple[str, str]:
         with self._lock:
