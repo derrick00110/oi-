@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 
 from oi_monitor.client import BinanceClient, BinanceError
 from oi_monitor.metrics import build_row, index_premium, index_tickers, normalize, usdt_perpetuals
@@ -14,6 +14,7 @@ log = logging.getLogger("oi-monitor")
 
 HIST_LIMIT = 300
 HIST_PERIOD = "5m"
+SCAN_ROUND_SEC = 240
 
 
 class Monitor:
@@ -124,17 +125,24 @@ class Monitor:
         workers = 8 if len(chosen) > 200 else 10
         rows = []
         errors = []
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
             futures = [
                 pool.submit(self._one, symbol, base, rank, ticker, premium.get(symbol))
                 for rank, (_volume, symbol, base, ticker) in enumerate(chosen, start=1)
             ]
-            for future in as_completed(futures):
-                symbol, row, error = future.result()
-                if row is not None:
-                    rows.append(row)
-                elif error:
-                    errors.append({"symbol": symbol, "message": error[:180]})
+            try:
+                for future in as_completed(futures, timeout=SCAN_ROUND_SEC):
+                    symbol, row, error = future.result()
+                    if row is not None:
+                        rows.append(row)
+                    elif error:
+                        errors.append({"symbol": symbol, "message": error[:180]})
+            except FuturesTimeout:
+                log.warning("扫描超过 %s 秒，这一轮剩下的合约留到下一次", SCAN_ROUND_SEC)
+                errors.append({"symbol": "", "message": f"扫描超过 {SCAN_ROUND_SEC} 秒"})
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         rows.sort(key=lambda row: row["volumeRank"])
         snapshot_at = max((row["snapshotAt"] for row in rows), default=None)
         elapsed_ms = int((time.perf_counter() - started) * 1000)

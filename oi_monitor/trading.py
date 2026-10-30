@@ -13,7 +13,7 @@ import urllib.request
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from oi_monitor.client import USER_AGENT, BinanceError
+from oi_monitor.client import USER_AGENT, BinanceError, read_http
 
 MAX_ORDER_ENV = "MAX_ORDER_USDT"
 TRADING_ENV = "TRADING_ENABLED"
@@ -242,13 +242,16 @@ class TradingDesk:
             headers={"User-Agent": USER_AGENT, "Accept": "application/json", "X-MBX-APIKEY": key},
         )
         try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+            raw = read_http(request, 15)
+            payload = json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            try:
-                body = exc.read().decode("utf-8", "replace")
-            except Exception:  # noqa: BLE001
-                body = ""
+            raw_body = getattr(exc, "body_bytes", None)
+            if not isinstance(raw_body, (bytes, bytearray)):
+                try:
+                    raw_body = exc.read(65536)
+                except Exception:  # noqa: BLE001
+                    raw_body = b""
+            body = raw_body.decode("utf-8", "replace") if isinstance(raw_body, (bytes, bytearray)) else ""
             if exc.code == 451 or "restricted location" in body:
                 raise BinanceError("这台机器访问不了币安合约交易接口。公开行情仍可播报，下单需要能连上 fapi.binance.com 的网络。") from exc
             message = body[:180]
