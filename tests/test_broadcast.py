@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -5,7 +6,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from oi_monitor.broadcast import BroadcastBook, compose, default_rules, seconds_until_scan
+from oi_monitor.broadcast import (
+    MIN_DIRECTION_COOLDOWN_SEC,
+    BroadcastBook,
+    clean_rules,
+    compose,
+    default_rules,
+    seconds_until_scan,
+)
+from oi_monitor.metrics import cycle_view, screen_change
 from oi_monitor.trading import TradingDesk, sign_query
 from oi_monitor.client import BinanceError
 
@@ -147,7 +156,8 @@ class BroadcastTest(unittest.TestCase):
             self.assertEqual(len(first), 1)
             self.assertEqual(book.evaluate([band_row()], 1000, now=1_100), [])
             self.assertEqual(book.evaluate([band_row()], 2000, now=1_100), [])
-            again = book.evaluate([band_row()], 3000, now=1_000 + 901)
+            self.assertEqual(book.evaluate([band_row()], 3000, now=1_000 + 901), [])
+            again = book.evaluate([band_row()], 4000, now=1_000 + MIN_DIRECTION_COOLDOWN_SEC)
             self.assertEqual(len(again), 1)
 
             book.settings["maxPerRound"] = 1
@@ -162,6 +172,125 @@ class BroadcastTest(unittest.TestCase):
             burst = book.evaluate(rows, 9000, now=5_000)
             self.assertEqual(len(burst), 5)
             self.assertEqual(burst[0]["symbol"], "C0USDT")
+
+    def test_each_five_minute_scan_checks_the_rolling_gate(self):
+        step = 5 * 60 * 1000
+        half = 30 * 60 * 1000
+        base = 1_700_000_000_000
+        base -= base % half
+
+        def points(spec):
+            rows = []
+            for minute, amount in spec:
+                rows.append({"timestamp": base + minute * 60 * 1000, "oi": amount / 10, "oiValue": amount, "supply": 0})
+            return rows
+
+        def watched(symbol, series, now_ms):
+            view = cycle_view(series, now_ms)
+            return {
+                "symbol": symbol,
+                "base": symbol.removesuffix("USDT"),
+                "price": 10,
+                "priceChangePercent": 0,
+                "oi": 1,
+                "oiValue": view["fifth"],
+                "marketCap": None,
+                "oiToMarketCapPct": None,
+                "changes": {},
+                "cycle": view,
+                "snapshotAt": now_ms,
+            }
+
+        # :11:30 is inside the old 30-minute block, before the old verify minute (:25).
+        first_now = base + 10 * 60 * 1000 + 90 * 1000
+        second_now = first_now + step
+        self.assertNotEqual(first_now % half, 0)
+        self.assertLess(first_now, base + 25 * 60 * 1000)
+        early_spec = [(-10, 10_000_000), (-5, 10_100_000), (0, 10_200_000), (5, 10_400_000), (10, 11_000_000)]
+        early = points(early_spec)
+        early_view = cycle_view(early, first_now)
+        self.assertTrue(early_view["ready"])
+        self.assertEqual([tick["at"] for tick in early_view["ticks"]], [base + minute * 60 * 1000 for minute, _amount in early_spec])
+        early_gate = screen_change(early_view["fifth"], early_view["oiValuePct"], early_view["pricePct"], early_view["oiValueDelta"])
+        self.assertEqual(early_gate["threshold"], 5)
+        self.assertTrue(early_gate["qualified"])
+
+        flat = points([(-10, 10_000_000), (-5, 10_000_000), (0, 10_000_000), (5, 10_000_000), (10, 10_000_000)])
+        flat_view = cycle_view(flat, first_now)
+        flat_gate = screen_change(flat_view["fifth"], flat_view["oiValuePct"], flat_view["pricePct"], flat_view["oiValueDelta"])
+        self.assertTrue(flat_view["ready"])
+        self.assertFalse(flat_gate["qualified"])
+        jumped = points(
+            [(-10, 10_000_000), (-5, 10_000_000), (0, 10_000_000), (5, 10_000_000), (10, 10_000_000), (15, 11_500_000)]
+        )
+        jumped_view = cycle_view(jumped, second_now)
+        jumped_gate = screen_change(
+            jumped_view["fifth"], jumped_view["oiValuePct"], jumped_view["pricePct"], jumped_view["oiValueDelta"]
+        )
+        self.assertTrue(jumped_view["ready"])
+        self.assertEqual(jumped_view["ticks"][0]["at"], base - 5 * 60 * 1000)
+        self.assertEqual(jumped_view["ticks"][-1]["at"], base + 15 * 60 * 1000)
+        self.assertTrue(jumped_gate["qualified"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            book = BroadcastBook(Path(directory))
+            first = book.evaluate(
+                [watched("AAAUSDT", early, first_now), watched("BBBUSDT", flat, first_now)],
+                1000,
+                now=1_000,
+            )
+            self.assertEqual([item["symbol"] for item in first], ["AAAUSDT"])
+            second = book.evaluate(
+                [
+                    watched("AAAUSDT", points(early_spec + [(15, 11_200_000)]), second_now),
+                    watched("BBBUSDT", jumped, second_now),
+                ],
+                2000,
+                now=1_000 + 300,
+            )
+            self.assertEqual([item["symbol"] for item in second], ["BBBUSDT"])
+
+    def test_same_direction_cooldown_is_thirty_minutes_and_configurable(self):
+        self.assertGreaterEqual(default_rules()[0]["cooldownSec"], 30 * 60)
+        longer = default_rules()
+        longer[0]["cooldownSec"] = 45 * 60
+        self.assertEqual(clean_rules(longer)[0]["cooldownSec"], 45 * 60)
+        shorter = default_rules()
+        shorter[0]["cooldownSec"] = 900
+        with self.assertRaises(ValueError):
+            clean_rules(shorter)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            saved = default_rules()
+            saved[0]["cooldownSec"] = 900
+            saved[0]["minAbsPct"] = 12
+            (path / "rules.json").write_text(json.dumps(saved), encoding="utf-8")
+            book = BroadcastBook(path)
+            self.assertEqual(book.rules[0]["cooldownSec"], MIN_DIRECTION_COOLDOWN_SEC)
+            self.assertEqual(book.rules[0]["minAbsPct"], 12)
+
+            first = book.evaluate([band_row()], 1000, now=10_000)
+            self.assertEqual(len(first), 1)
+            self.assertEqual(book.evaluate([band_row()], 2000, now=10_000 + 300), [])
+            self.assertEqual(book.evaluate([band_row()], 3000, now=10_000 + 900), [])
+            self.assertEqual(book.evaluate([band_row()], 4000, now=10_000 + MIN_DIRECTION_COOLDOWN_SEC - 1), [])
+            again = book.evaluate([band_row()], 5000, now=10_000 + MIN_DIRECTION_COOLDOWN_SEC)
+            self.assertEqual(len(again), 1)
+            opposite = book.evaluate(
+                [band_row(value_move=-12, price_move=-3)],
+                6000,
+                now=10_000 + MIN_DIRECTION_COOLDOWN_SEC,
+            )
+            self.assertEqual(len(opposite), 1)
+            self.assertIn("弃盘行情，需观望", opposite[0]["text"])
+
+            book.replace_rules([{**default_rules()[0], "cooldownSec": 45 * 60}])
+            held = book.evaluate([band_row(symbol="ZZZUSDT", base="ZZZ")], 7000, now=20_000)
+            self.assertEqual(len(held), 1)
+            self.assertEqual(book.evaluate([band_row(symbol="ZZZUSDT", base="ZZZ")], 8000, now=20_000 + 30 * 60), [])
+            released = book.evaluate([band_row(symbol="ZZZUSDT", base="ZZZ")], 9000, now=20_000 + 45 * 60)
+            self.assertEqual(len(released), 1)
 
     def test_disabled_order_never_signs_a_request(self):
         class Finder:

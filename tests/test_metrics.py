@@ -4,7 +4,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from oi_monitor.metrics import build_row, changes_for, cycle_view, judge, normalize, oi_move_threshold, parse_limit, pct_change
+from oi_monitor.metrics import (
+    build_row,
+    changes_for,
+    cycle_view,
+    judge,
+    normalize,
+    oi_move_threshold,
+    parse_limit,
+    pct_change,
+    screen_change,
+)
 
 
 def linear_series(n=97, oi0=100.0, oi1=110.0, v0=1000.0, v1=1300.0, supply=2000.0):
@@ -155,14 +165,95 @@ class MetricsTest(unittest.TestCase):
         series = []
         for index, (amount, price) in enumerate(zip(amounts, prices)):
             series.append({"timestamp": start + index * step, "oi": amount / price, "oiValue": amount, "supply": 0})
-        ready = cycle_view(series, start + 26 * 60 * 1000)
+        ready = cycle_view(series, start + 20 * 60 * 1000)
         self.assertTrue(ready["ready"])
         self.assertEqual(ready["count"], 5)
         self.assertAlmostEqual(ready["oiValuePct"], 20.0, places=4)
         self.assertAlmostEqual(ready["pricePct"], 10.0, places=4)
-        early = cycle_view(series, start + 21 * 60 * 1000)
-        self.assertFalse(early["ready"])
-        self.assertAlmostEqual(early["oiValuePct"], 20.0, places=4)
+        still = cycle_view(series, start + 21 * 60 * 1000)
+        self.assertTrue(still["ready"])
+        self.assertAlmostEqual(still["oiValuePct"], 20.0, places=4)
+        gap = [row for row in series if row["timestamp"] != start + 2 * step]
+        self.assertFalse(cycle_view(gap, start + 21 * 60 * 1000)["ready"])
+
+    def test_rolling_window_picks_latest_five_ticks_off_the_half_hour(self):
+        step = 5 * 60 * 1000
+        half = 30 * 60 * 1000
+        base = 1_700_000_000_000
+        base -= base % half
+        # :25 is not :00 or :30. The old block would have used :00 through :20 and ignored :25.
+        amounts = {
+            -5: 1_000_000,
+            0: 50_000_000,
+            5: 8_000_000,
+            10: 8_400_000,
+            15: 7_900_000,
+            20: 8_800_000,
+            25: 9_200_000,
+        }
+        prices = {minute: 10 + minute / 100 for minute in amounts}
+        series = []
+        for minute, amount in amounts.items():
+            price = prices[minute]
+            series.append(
+                {
+                    "timestamp": base + minute * 60 * 1000,
+                    "oi": amount / price,
+                    "oiValue": amount,
+                    "supply": 1,
+                }
+            )
+        now = base + 27 * 60 * 1000
+        view = cycle_view(series, now)
+        self.assertNotEqual(now % half, 0)
+        self.assertTrue(view["ready"])
+        self.assertEqual(
+            [tick["at"] for tick in view["ticks"]],
+            [base + minute * 60 * 1000 for minute in (5, 10, 15, 20, 25)],
+        )
+        self.assertEqual(view["fifth"], 9_200_000)
+        self.assertAlmostEqual(view["oiValuePct"], (9_200_000 - 8_000_000) / 8_000_000 * 100, places=4)
+        self.assertAlmostEqual(view["pricePct"], (prices[25] - prices[5]) / prices[5] * 100, places=4)
+        screened = screen_change(view["fifth"], view["oiValuePct"], view["pricePct"], view["oiValueDelta"])
+        self.assertEqual(screened["threshold"], 9)
+        self.assertTrue(screened["qualified"])
+
+        series.append(
+            {
+                "timestamp": base + 30 * 60 * 1000,
+                "oi": 10_500_000 / 12,
+                "oiValue": 10_500_000,
+                "supply": 1,
+            }
+        )
+        rolled = cycle_view(series, base + 31 * 60 * 1000)
+        self.assertEqual(
+            [tick["at"] for tick in rolled["ticks"]],
+            [base + minute * 60 * 1000 for minute in (10, 15, 20, 25, 30)],
+        )
+        self.assertTrue(rolled["ready"])
+        self.assertEqual(rolled["fifth"], 10_500_000)
+        rolled_screen = screen_change(rolled["fifth"], rolled["oiValuePct"], rolled["pricePct"], rolled["oiValueDelta"])
+        self.assertEqual(rolled_screen["threshold"], 5)
+        self.assertNotEqual([tick["at"] for tick in rolled["ticks"]][0] % half, 0)
+
+        small = []
+        for index, amount in enumerate((4_000_000, 4_100_000, 4_050_000, 4_200_000, 4_400_000)):
+            small.append(
+                {
+                    "timestamp": base + 5 * 60 * 1000 + index * step,
+                    "oi": amount / 10,
+                    "oiValue": amount,
+                    "supply": 1,
+                }
+            )
+        small_view = cycle_view(small, small[-1]["timestamp"] + 60_000)
+        small_screen = screen_change(
+            small_view["fifth"], small_view["oiValuePct"], small_view["pricePct"], small_view["oiValueDelta"]
+        )
+        self.assertEqual(small_view["fifth"], 4_400_000)
+        self.assertEqual(small_screen["threshold"], 10)
+        self.assertTrue(small_screen["qualified"])
 
     def test_parse_limit(self):
         self.assertEqual(parse_limit("60"), 60)
