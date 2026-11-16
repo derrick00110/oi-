@@ -6,9 +6,9 @@ import time
 
 BAR_MINUTES = 5
 TICK_MS = 5 * 60_000
-CYCLE_MS = 30 * 60_000
 TICK_COUNT = 5
-VERIFY_AFTER_MS = 25 * 60_000
+# Tick 1 sits this far before tick 5. The window rolls forward on every scan.
+ROLL_MS = (TICK_COUNT - 1) * TICK_MS
 WINDOWS = (
     ("5m", 5),
     ("15m", 15),
@@ -131,8 +131,27 @@ def _point_at_stamp(series: list[dict], target: int, tolerance_ms: int = 60_000)
     return best
 
 
+def _latest_aligned_tick(series: list[dict], clock: int) -> int | None:
+    """Newest 5-minute boundary at or before `clock` that the series actually has."""
+    latest = None
+    for row in series:
+        try:
+            stamp = int(row["timestamp"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if stamp <= clock and (latest is None or stamp > latest):
+            latest = stamp
+    if latest is None:
+        return None
+    return latest - (latest % TICK_MS)
+
+
 def cycle_view(series: list[dict], now_ms: int | None = None) -> dict:
-    """Five 5-minute readings in the current 30-minute round. The gate uses the 1st and the 5th."""
+    """Latest five aligned 5-minute ticks. Tick 5 is the newest, tick 1 is 20 minutes earlier.
+
+    The gate still uses only the 1st and the 5th. Ready means all five ticks are present,
+    so every 5-minute scan can verify instead of waiting for a clock-aligned 30-minute block.
+    """
     empty = {
         "start": None,
         "ready": False,
@@ -147,7 +166,10 @@ def cycle_view(series: list[dict], now_ms: int | None = None) -> dict:
     if not series:
         return empty
     clock = int(series[-1]["timestamp"] if now_ms is None else now_ms)
-    start = clock - (clock % CYCLE_MS)
+    latest = _latest_aligned_tick(series, clock)
+    if latest is None:
+        return empty
+    start = latest - ROLL_MS
     ticks = []
     for index in range(TICK_COUNT):
         point = _point_at_stamp(series, start + index * TICK_MS)
@@ -171,7 +193,7 @@ def cycle_view(series: list[dict], now_ms: int | None = None) -> dict:
             price_pct = pct_change(fifth["price"], first["price"])
     return {
         "start": start,
-        "ready": clock >= start + VERIFY_AFTER_MS and all(ticks),
+        "ready": all(ticks),
         "count": sum(point is not None for point in ticks),
         "ticks": ticks,
         "first": None if not first else first["oiValue"],
@@ -269,9 +291,9 @@ FACTS = {
 def oi_move_threshold(oi_value: float) -> float | None:
     """USDT open-interest percent gate. It steps down as the notional grows."""
     if oi_value < 5_000_000:
-        return 15.0
-    if oi_value <= 10_000_000:
         return 10.0
+    if oi_value <= 10_000_000:
+        return 9.0
     if oi_value <= 15_000_000:
         return 5.0
     return 5.0
@@ -357,7 +379,7 @@ def attach_reads(rows: list[dict], chop_pct: float) -> list[dict]:
             count = int(cycle.get("count") or 0)
             item["cycleRead"] = {
                 "code": "pending",
-                "text": f"刻度 {count}/5，最后 5 分钟再核实",
+                "text": f"刻度 {count}/5，凑齐 5 次再核实",
                 "bias": "flat",
                 "qualified": False,
             }

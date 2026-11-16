@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from oi_monitor.broadcast import compose, default_rules
+from oi_monitor.broadcast import MIN_DIRECTION_COOLDOWN_SEC, compose, default_rules
 from oi_monitor.client import BinanceClient
 from oi_monitor.metrics import cycle_view, index_tickers, normalize, parse_limit, usdt_perpetuals
 
@@ -16,15 +16,29 @@ HIST_LIMIT = 500
 
 
 def hits_from_series(symbol: str, base: str, series: list[dict], rule: dict | None = None, chop: float = 0.5) -> list[dict]:
-    """One hit per 30-minute round whose 1st and 5th ticks clear the gate."""
+    """One hit per rolling 5-tick window that clears the gate.
+
+    The same direction is kept at most once per cooldown, matching the live broadcast.
+    """
     rule = dict(default_rules()[0] if rule is None else rule)
     if not series:
         return []
-    starts = sorted({point["timestamp"] - (point["timestamp"] % (30 * 60_000)) for point in series})
+    try:
+        cooldown_ms = int(rule.get("cooldownSec") or MIN_DIRECTION_COOLDOWN_SEC) * 1000
+    except (TypeError, ValueError):
+        cooldown_ms = MIN_DIRECTION_COOLDOWN_SEC * 1000
+    if cooldown_ms < MIN_DIRECTION_COOLDOWN_SEC * 1000:
+        cooldown_ms = MIN_DIRECTION_COOLDOWN_SEC * 1000
     found = []
-    for start in starts:
-        view = cycle_view(series, start + 26 * 60_000)
+    last_at: dict[str, int] = {}
+    for point in series:
+        stamp = int(point["timestamp"])
+        view = cycle_view(series, stamp)
         if not view.get("ready"):
+            continue
+        fifth = (view.get("ticks") or [None])[-1] or {}
+        fifth_at = int(fifth.get("at") or 0)
+        if abs(fifth_at - stamp) > 60_000:
             continue
         row = {
             "symbol": symbol,
@@ -38,18 +52,23 @@ def hits_from_series(symbol: str, base: str, series: list[dict], rule: dict | No
         text = compose(row, rule, chop)
         if not text:
             continue
-        fifth = (view.get("ticks") or [None])[-1] or {}
+        move = view.get("oiValuePct") or 0
+        direction = "up" if move > 0 else "down"
+        previous = last_at.get(direction)
+        if previous is not None and fifth_at - previous < cooldown_ms:
+            continue
+        last_at[direction] = fifth_at
         found.append(
             {
-                "at": int(fifth.get("at") or start),
+                "at": fifth_at,
                 "symbol": symbol,
-                "snapshotAt": int(fifth.get("at") or start),
+                "snapshotAt": fifth_at,
                 "oiValue": view.get("fifth"),
                 "move": None if view.get("oiValuePct") is None else round(view["oiValuePct"], 4),
                 "pricePct": None if view.get("pricePct") is None else round(view["pricePct"], 4),
                 "fact": text.split("。")[-1],
                 "text": text,
-                "window": "30m",
+                "window": "20m",
                 "announced": False,
                 "source": "replay",
             }

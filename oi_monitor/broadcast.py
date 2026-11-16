@@ -16,6 +16,10 @@ from oi_monitor.metrics import judge, screen_change
 
 SCAN_PERIOD_SEC = 300
 SCAN_LAG_SEC = 90
+# Same coin, same rule, same direction. A rolling 20-minute window is re-checked
+# every 5 minutes, so the old 15-minute pause would fire again before that move
+# had rolled out. Thirty minutes is the floor; a rule may set a longer pause.
+MIN_DIRECTION_COOLDOWN_SEC = 30 * 60
 WEBHOOK_TOKEN_LIMIT = 4096
 LOG = logging.getLogger("oi-monitor")
 
@@ -49,7 +53,7 @@ def default_rules() -> list[dict]:
             "maxOiValue": None,
             "minPricePct": None,
             "dynamic": True,
-            "cooldownSec": 900,
+            "cooldownSec": MIN_DIRECTION_COOLDOWN_SEC,
         },
     ]
 
@@ -80,7 +84,7 @@ def _clean_rule(raw: dict, fallback_id: str) -> dict:
     try:
         min_abs = float(raw.get("minAbsPct"))
         min_value = float(raw.get("minOiValue") or 0)
-        cooldown = int(raw.get("cooldownSec") or 900)
+        cooldown = int(raw.get("cooldownSec") or MIN_DIRECTION_COOLDOWN_SEC)
         max_value = _optional_positive(raw.get("maxOiValue"))
         min_price = _optional_positive(raw.get("minPricePct"))
     except (TypeError, ValueError) as exc:
@@ -93,8 +97,8 @@ def _clean_rule(raw: dict, fallback_id: str) -> dict:
         raise ValueError("未平仓金额上限不能小于下限")
     if min_price is not None and min_price > 500:
         raise ValueError("价格涨幅阈值需要在 0 到 500 之间")
-    if not 60 <= cooldown <= 86_400:
-        raise ValueError("冷却时间需要在 60 秒到 1 天之间")
+    if not MIN_DIRECTION_COOLDOWN_SEC <= cooldown <= 86_400:
+        raise ValueError("冷却时间需要在 30 分钟到 1 天之间")
     rule_id = str(raw.get("id") or fallback_id).strip()
     if not rule_id or len(rule_id) > 40:
         raise ValueError("规则编号无效")
@@ -123,6 +127,30 @@ def _optional_positive(raw):
     if value <= 0:
         return None
     return value
+
+
+def lift_short_cooldowns(raw):
+    """Raise a saved cooldown that is still on the old 15-minute pause.
+
+    Loading must not throw the whole rule file away just because cooldownSec
+    predates the rolling window. Saving a value under 30 minutes still errors.
+    """
+    if not isinstance(raw, list):
+        return raw
+    lifted = []
+    for item in raw:
+        if not isinstance(item, dict):
+            lifted.append(item)
+            continue
+        item = dict(item)
+        try:
+            cooldown = int(item.get("cooldownSec") or 0)
+        except (TypeError, ValueError):
+            cooldown = 0
+        if cooldown < MIN_DIRECTION_COOLDOWN_SEC:
+            item["cooldownSec"] = MIN_DIRECTION_COOLDOWN_SEC
+        lifted.append(item)
+    return lifted
 
 
 def clean_rules(raw) -> list[dict]:
@@ -447,7 +475,7 @@ class BroadcastBook:
         state = self._read_json("broadcasts.json")
         if isinstance(rules, list):
             try:
-                self.rules = clean_rules(rules)
+                self.rules = clean_rules(lift_short_cooldowns(rules))
             except ValueError:
                 self.rules = default_rules()
         if isinstance(settings, dict):
@@ -519,7 +547,8 @@ class BroadcastBook:
                 previous = self.seen.get(key) or {}
                 if int(previous.get("snapshot") or 0) == snapshot and snapshot != 0:
                     continue
-                if moment - float(previous.get("at") or 0) < rule["cooldownSec"]:
+                seen_at = previous.get("at")
+                if seen_at is not None and moment - float(seen_at) < rule["cooldownSec"]:
                     continue
                 item = {
                     "id": self.next_id,

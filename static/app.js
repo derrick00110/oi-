@@ -290,7 +290,7 @@ function changeCell(row, field) {
   const value = item[field];
   const delta = field === "oiPct" ? item.oiDelta : item.oiValueDelta;
   const tip = field === "oiValuePct"
-    ? "15%、10% 和 5% 看的是未平仓金额涨跌。"
+    ? "10%、9% 和 5% 看的是未平仓金额涨跌。"
     : "未平仓合约数量涨跌，只作对照。门槛不看这一列。";
   return el("div", { class: "stack", title: tip }, [
     el("span", { class: `primary pill ${tone(value)}`, text: pct(value) }),
@@ -375,7 +375,7 @@ function scaleCell(row) {
     ? ticks.map((tick) => (tick ? compact(tick.oiValue) : "—")).join(" → ")
     : "刻度未齐";
   const price = cycle.pricePct == null ? "" : `价格 ${pct(cycle.pricePct)}`;
-  return el("div", { class: "stack", title: "每 5 分钟记一次。播报只比第 1 次和第 5 次的未平仓金额，价格同样比这两次。中间三次不参与门槛。" }, [
+  return el("div", { class: "stack", title: "最近 5 个 5 分钟刻度。播报只比第 1 次和第 5 次的未平仓金额，价格同样比这两次。中间三次不参与门槛。" }, [
     el("span", { class: `primary pill ${tone(cycle.oiValuePct)}`, text: cycle.oiValuePct == null ? "—" : pct(cycle.oiValuePct) }),
     el("span", { class: "sub", text: span }),
     price ? el("span", { class: "sub", text: price }) : null,
@@ -425,7 +425,7 @@ function renderChrome() {
   oiHeader.dataset.sort = `oi:${state.window}`;
   valueHeader.textContent = `金额涨跌 · ${windowLabel(state.window)}`;
   const factHeader = $("#factSort");
-  if (factHeader) factHeader.textContent = "事实 · 本轮";
+  if (factHeader) factHeader.textContent = "事实 · 近5次";
   oiHeader.textContent = `数量涨跌 · ${windowLabel(state.window)}`;
   document.querySelectorAll("#windows button").forEach((button) => {
     button.classList.toggle("active", button.dataset.window === state.window);

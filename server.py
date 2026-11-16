@@ -472,7 +472,7 @@ def serve(host: str, port: int) -> None:
     LOOP.start()
     shown = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     print(f"oi事实监测播报已启动： http://{shown}:{port}")
-    print("每 5 分钟记刻度，每 30 分钟用第 1 次和第 5 次核实门槛后播报。不会自动下单。按 Ctrl+C 结束。")
+    print("每 5 分钟扫描一次，用最近 5 个 5 分钟刻度核实门槛后播报。第 1 次是最新刻度前 20 分钟，第 5 次是最新。同一币种同一方向 30 分钟内不重复播。不会自动下单。按 Ctrl+C 结束。")
     print(f"扫描超过 {LOOP.stale_sec:.0f} 秒没有完成时，看门狗会重启扫描线程；线程若还卡着就退出进程。")
     print(f"每天的监测记录写在 {MEMORY.directory}")
     try:

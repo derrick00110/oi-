@@ -82,6 +82,20 @@ class MemoryTest(unittest.TestCase):
             self.assertIn("回放", text)
             self.assertIn("AKEUSDT", text)
 
+    def test_replay_keeps_same_direction_at_least_thirty_minutes_apart(self):
+        step = 5 * 60 * 1000
+        start = 1_760_000_000_000
+        start -= start % (30 * 60 * 1000)
+        series = []
+        for index in range(12):
+            value = 4_000_000 * (1.05 ** index)
+            series.append({"timestamp": start + index * step, "oi": 100, "oiValue": value, "supply": 0})
+        hits = hits_from_series("AKEUSDT", "AKE", series)
+        self.assertGreaterEqual(len(hits), 2)
+        gaps = [hits[index]["at"] - hits[index - 1]["at"] for index in range(1, len(hits))]
+        self.assertTrue(all(gap >= 30 * 60 * 1000 for gap in gaps))
+        self.assertTrue(all(hit["window"] == "20m" for hit in hits))
+
 
 if __name__ == "__main__":
     unittest.main()
