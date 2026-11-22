@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from oi_monitor.metrics import judge, screen_change
@@ -348,6 +349,82 @@ def funding_phrase(rate) -> str:
     return f"资金费率 {percent:+.4f}%，{who}"
 
 
+# Display only. Tick 5 notional at or above this is a louder broadcast, not a new gate.
+TICK_EMPHASIS_USD = 20_000_000
+TICK_EMPHASIS_PREFIX = "\U0001F525\u3010OI\u22652000\u4e07\u3011 "
+# Bullish direction emoji. Asia/Shanghai matches the daily memory files (UTC+8, no daylight saving).
+GREEN_MARK = "\U0001F7E2"
+SHANGHAI = timezone(timedelta(hours=8))
+
+
+def shanghai_day(moment: float) -> str:
+    """Calendar day in Asia/Shanghai for an epoch-seconds timestamp."""
+    return datetime.fromtimestamp(float(moment), SHANGHAI).strftime("%Y-%m-%d")
+
+
+def _tick_lead(mark: str, fifth) -> str:
+    """Direction emoji, with a louder prefix when tick 5 is at least 20 million USD."""
+    try:
+        current = float(fifth)
+    except (TypeError, ValueError):
+        return mark
+    if current >= TICK_EMPHASIS_USD:
+        return TICK_EMPHASIS_PREFIX + mark
+    return mark
+
+
+def _green_day_note(count: int) -> str:
+    """Trailing note from the 4th green broadcast of that symbol that Shanghai day."""
+    if count < 4:
+        return ""
+    return f"\u3002\u26a0\ufe0f\u4eca\u65e5\u7b2c {count} \u6b21\u7eff\u8272\u64ad\u62a5"
+
+
+def _clean_green_daily(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    cleaned = {}
+    for symbol, slot in raw.items():
+        if not isinstance(symbol, str) or not symbol or not isinstance(slot, dict):
+            continue
+        day = slot.get("day")
+        if not isinstance(day, str) or len(day) != 10:
+            continue
+        try:
+            count = int(slot.get("count") or 0)
+        except (TypeError, ValueError):
+            continue
+        if count < 0:
+            continue
+        cleaned[symbol] = {"day": day, "count": count}
+    return cleaned
+
+
+def _green_daily_from_items(items: list[dict]) -> dict:
+    """Fill a missing counter from broadcasts already stored in this file."""
+    totals: dict[tuple[str, str], int] = {}
+    for item in items:
+        if not isinstance(item, dict) or GREEN_MARK not in str(item.get("text") or ""):
+            continue
+        symbol = item.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            continue
+        try:
+            at_ms = int(item.get("at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if at_ms <= 0:
+            continue
+        day = shanghai_day(at_ms / 1000.0)
+        totals[(symbol, day)] = totals.get((symbol, day), 0) + 1
+    latest: dict[str, dict] = {}
+    for (symbol, day), count in totals.items():
+        current = latest.get(symbol)
+        if current is None or day > current["day"]:
+            latest[symbol] = {"day": day, "count": count}
+    return latest
+
+
 def _tick_price_phrase(price_pct) -> str:
     if price_pct is None:
         return "第 1 次到第 5 次刻度的价格变动暂无"
@@ -363,8 +440,9 @@ def _tick_price_phrase(price_pct) -> str:
 def _cycle_sentence(row: dict, cycle: dict, conclusion: str, mark: str) -> str:
     ratio = "暂无" if row.get("oiToMarketCapPct") is None else f"{row['oiToMarketCapPct']:.1f}%"
     symbol = row.get("symbol") or row.get("base")
+    lead = _tick_lead(mark, cycle.get("fifth"))
     return (
-        f"{mark} [{symbol}] 币安未平仓金额 {signed_pct(cycle.get('oiValuePct'))}，"
+        f"{lead} [{symbol}] 币安未平仓金额 {signed_pct(cycle.get('oiValuePct'))}，"
         f"{_tick_price_phrase(cycle.get('pricePct'))}，"
         f"第 1 次刻度 {usd_text(cycle.get('first'))}，第 5 次刻度 {usd_text(cycle.get('fifth'))}，"
         f"未平仓金额：{usd_text(cycle.get('fifth'))}，"
@@ -464,6 +542,7 @@ class BroadcastBook:
         self.rules = default_rules()
         self.settings = default_settings()
         self.seen: dict[str, dict] = {}
+        self.green_daily: dict[str, dict] = {}
         self.next_id = 1
         self.last_error = ""
         self.last_scan_at = 0
@@ -491,6 +570,10 @@ class BroadcastBook:
             seen = state.get("seen") or {}
             if isinstance(seen, dict):
                 self.seen = seen
+            if "greenDaily" in state:
+                self.green_daily = _clean_green_daily(state.get("greenDaily"))
+            else:
+                self.green_daily = _green_daily_from_items(self.items)
 
     def qualify(self, rows: list[dict]) -> list[dict]:
         """Every enabled-rule hit, before the per-round cap and cooldown."""
@@ -550,6 +633,11 @@ class BroadcastBook:
                 seen_at = previous.get("at")
                 if seen_at is not None and moment - float(seen_at) < rule["cooldownSec"]:
                     continue
+                if GREEN_MARK in text:
+                    count = self._next_green_count(row["symbol"], moment)
+                    note = _green_day_note(count)
+                    if note:
+                        text += note
                 item = {
                     "id": self.next_id,
                     "at": int(moment * 1000),
@@ -625,8 +713,26 @@ class BroadcastBook:
     def _write_state(self) -> None:
         self._write_json(
             "broadcasts.json",
-            {"nextId": self.next_id, "items": self.items[-5000:], "seen": self.seen},
+            {
+                "nextId": self.next_id,
+                "items": self.items[-5000:],
+                "seen": self.seen,
+                "greenDaily": self.green_daily,
+            },
         )
+
+    def _next_green_count(self, symbol: str, moment: float) -> int:
+        day = shanghai_day(moment)
+        slot = self.green_daily.get(symbol) or {}
+        if slot.get("day") != day:
+            count = 1
+        else:
+            try:
+                count = int(slot.get("count") or 0) + 1
+            except (TypeError, ValueError):
+                count = 1
+        self.green_daily[symbol] = {"day": day, "count": count}
+        return count
 
     def _read_json(self, name: str):
         path = self.directory / name

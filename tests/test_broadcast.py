@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -49,6 +50,18 @@ def row(symbol="BTCUSDT", base="BTC", move=6.5, oi_move=None, value_move=None, p
             "ticks": [],
         },
     }
+
+
+PREFIX = "\U0001F525\u3010OI\u22652000\u4e07\u3011 "
+SHANGHAI_TZ = timezone(timedelta(hours=8))
+
+
+def green_note(count: int) -> str:
+    return f"\u3002\u26a0\ufe0f\u4eca\u65e5\u7b2c {count} \u6b21\u7eff\u8272\u64ad\u62a5"
+
+
+def shanghai_epoch(year, month, day, hour, minute, second=0) -> float:
+    return datetime(year, month, day, hour, minute, second, tzinfo=SHANGHAI_TZ).timestamp()
 
 
 def loose_rule():
@@ -291,6 +304,255 @@ class BroadcastTest(unittest.TestCase):
             self.assertEqual(book.evaluate([band_row(symbol="ZZZUSDT", base="ZZZ")], 8000, now=20_000 + 30 * 60), [])
             released = book.evaluate([band_row(symbol="ZZZUSDT", base="ZZZ")], 9000, now=20_000 + 45 * 60)
             self.assertEqual(len(released), 1)
+
+    def test_emphasis_prefix_on_large_tick_open_interest(self):
+        rule = default_rules()[0]
+        cases = [
+            (12, 6, 1_000_000, "🟢", "优先推报，做多信号"),
+            (12, -3, 1_000_000, "⚪", "可能为出货、洗盘或蓄力"),
+            (12, 0.1, 1_000_000, "⚪", "可能为出货、洗盘或蓄力"),
+            (-12, -3, -1_000_000, "⚪", "弃盘行情，需观望"),
+            (-12, 3, -1_000_000, "⚪", "未平仓减少、价格上涨，需观望"),
+            (-12, 0.1, -1_000_000, "⚪", "未平仓减少、价格持平，需观望"),
+        ]
+        for move, price, delta, mark, fact in cases:
+            large = compose(
+                band_row(oi_value=22_000_000, value_move=move, move=move, price_move=price, value_delta=delta),
+                rule,
+            )
+            self.assertTrue(large.startswith(PREFIX + mark + " ["), large)
+            self.assertIn(fact, large)
+            self.assertNotRegex(large.split("] ", 1)[1], r"[A-Za-z]")
+            small = compose(
+                band_row(oi_value=8_000_000, value_move=move, move=move, price_move=price, value_delta=delta),
+                rule,
+            )
+            self.assertTrue(small.startswith(mark + " ["), small)
+            self.assertNotIn("\U0001F525", small)
+            self.assertIn(fact, small)
+
+        exact = compose(
+            band_row(oi_value=20_000_000, value_move=-6, move=-6, price_move=3, value_delta=-1_000_000),
+            rule,
+        )
+        self.assertTrue(exact.startswith(PREFIX + "⚪ ["), exact)
+        self.assertNotIn("关键分水岭", exact)
+
+        below = compose(
+            band_row(oi_value=19_999_999.99, value_move=-6, move=-6, price_move=3, value_delta=-1_000_000),
+            rule,
+        )
+        self.assertTrue(below.startswith("⚪ ["), below)
+        self.assertNotIn("\U0001F525", below)
+
+        by_tick = band_row(oi_value=25_000_000, value_delta=1_000_000, move=6, price_move=3)
+        by_tick["oiValue"] = 1_000_000
+        self.assertTrue(compose(by_tick, rule).startswith(PREFIX + "🟢 ["))
+        by_row = band_row(oi_value=8_000_000, value_delta=400_000, move=9, price_move=3)
+        by_row["oiValue"] = 30_000_000
+        quiet = compose(by_row, rule)
+        self.assertTrue(quiet.startswith("🟢 ["), quiet)
+        self.assertNotIn("\U0001F525", quiet)
+
+        missing = compose(band_row(oi_value=25_000_000, value_delta=1_000_000, move=6, price_move=None), rule)
+        self.assertTrue(missing.startswith(PREFIX + "⚪ ["), missing)
+        self.assertIn("价格缺失，暂不判断", missing)
+        self.assertIn("价格变动暂无", missing)
+
+        crossed = compose(band_row(oi_value=20_100_000, value_delta=500_000, move=2.5, price_move=1), rule)
+        self.assertEqual(
+            crossed,
+            PREFIX
+            + "🟢 [BTCUSDT] 币安未平仓金额 +2.5%，第 1 次到第 5 次刻度价格上涨 1.0%，"
+            + "第 1 次刻度 1960 万美元，第 5 次刻度 2010 万美元，未平仓金额：2010 万美元，"
+            + "未平仓金额/市值比率：0.5%，24 小时价格变动：-4.2%。"
+            + "未平仓金额达到2000万关键分水岭，庄家常在此离场或加速拉升。优先推报，做多信号",
+        )
+
+        doubled = compose(band_row(oi_value=10_000_000, value_delta=5_000_000, move=100, price_move=8), rule)
+        self.assertTrue(doubled.startswith("🟢 ["), doubled)
+        self.assertNotIn("\U0001F525", doubled)
+        self.assertIn("最高级别", doubled)
+        self.assertIn("短时间翻倍", doubled)
+
+        doubled_large = compose(
+            band_row(oi_value=30_000_000, value_delta=16_000_000, move=100, price_move=-4),
+            rule,
+        )
+        self.assertTrue(doubled_large.startswith(PREFIX + "🟢 ["), doubled_large)
+        self.assertLess(doubled_large.index("最高级别"), doubled_large.index("短时间翻倍"))
+        self.assertLess(doubled_large.index("短时间翻倍"), doubled_large.index("未平仓金额达到2000万关键分水岭，庄家常在此离场或加速拉升"))
+        self.assertLess(doubled_large.index("2000万关键分水岭"), doubled_large.index("可能为出货、洗盘或蓄力"))
+        self.assertIsNone(compose(band_row(oi_value=25_000_000, value_delta=500_000, move=4.9, price_move=1), rule))
+
+        fixed = compose(row(oi_value=90_000_000, value_move=4, price_move=2), loose_rule())
+        self.assertTrue(fixed.startswith("🟢 ["), fixed)
+        self.assertNotIn("\U0001F525", fixed)
+
+    def test_green_repeat_note_starts_at_the_fourth_sent_broadcast(self):
+        rule = default_rules()[0]
+        sample = band_row(oi_value=25_000_000, value_delta=1_000_000, move=6, price_move=3)
+        white = band_row(oi_value=25_000_000, value_delta=-1_000_000, value_move=-6, price_move=-3)
+        other = band_row(symbol="ETHUSDT", base="ETH")
+        base = compose(sample, rule)
+        white_base = compose(white, rule)
+        other_base = compose(other, rule)
+        self.assertTrue(base.startswith(PREFIX + "🟢 ["))
+        self.assertTrue(white_base.startswith(PREFIX + "⚪ ["))
+        self.assertNotIn("绿色播报", base)
+        self.assertNotIn("\u26a0", base)
+        start = shanghai_epoch(2026, 11, 22, 10, 0)
+        step = MIN_DIRECTION_COOLDOWN_SEC
+        with tempfile.TemporaryDirectory() as directory:
+            book = BroadcastBook(Path(directory))
+            for _ in range(6):
+                hits = book.qualify([sample, white, other])
+                texts = [hit["text"] for hit in hits]
+                self.assertIn(base, texts)
+                self.assertIn(white_base, texts)
+                self.assertTrue(all("绿色播报" not in text for text in texts))
+            first = book.evaluate([sample], 1, now=start)
+            self.assertEqual(first[0]["text"], base)
+            self.assertEqual(book.evaluate([sample], 1, now=start + step), [])
+            self.assertEqual(book.evaluate([sample], 2, now=start + 10), [])
+            washed = book.evaluate([white], 3, now=start + 10)
+            self.assertEqual(washed[0]["text"], white_base)
+            eth = book.evaluate([other], 4, now=start)
+            self.assertEqual(eth[0]["text"], other_base)
+            second = book.evaluate([sample], 5, now=start + step)
+            third = book.evaluate([sample], 6, now=start + 2 * step)
+            self.assertEqual(second[0]["text"], base)
+            self.assertEqual(third[0]["text"], base)
+
+            resumed = BroadcastBook(Path(directory))
+            fourth = resumed.evaluate([sample], 7, now=start + 3 * step)
+            self.assertEqual(fourth[0]["text"], base + green_note(4))
+            self.assertEqual(compose(sample, rule), base)
+            fifth = resumed.evaluate([sample], 8, now=start + 4 * step)
+            self.assertEqual(fifth[0]["text"], base + green_note(5))
+            eth_again = resumed.evaluate([other], 9, now=start + step)
+            self.assertEqual(eth_again[0]["text"], other_base)
+
+            path = Path(directory) / "broadcasts.json"
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["greenDaily"]["BTCUSDT"], {"day": "2026-11-22", "count": 5})
+            saved["items"] = []
+            saved["seen"] = {}
+            path.write_text(json.dumps(saved), encoding="utf-8")
+            kept = BroadcastBook(Path(directory))
+            sixth = kept.evaluate([sample], 10, now=start + 5 * step)
+            self.assertEqual(sixth[0]["text"], base + green_note(6))
+
+    def test_capped_and_other_direction_greens_do_not_share_a_count(self):
+        plain = band_row(symbol="AAAUSDT", base="AAA", move=20)
+        doubled = band_row(symbol="BBBUSDT", base="BBB", oi_value=10_000_000, value_delta=5_000_000, move=12)
+        plain_base = compose(plain, default_rules()[0])
+        start = shanghai_epoch(2026, 11, 22, 9, 0)
+        step = MIN_DIRECTION_COOLDOWN_SEC
+        with tempfile.TemporaryDirectory() as directory:
+            book = BroadcastBook(Path(directory))
+            for index in range(3):
+                made = book.evaluate([plain], 10 + index, now=start + index * step)
+                self.assertEqual(made[0]["text"], plain_base)
+            book.settings["maxPerRound"] = 1
+            capped = book.evaluate([plain, doubled], 20, now=start + 3 * step)
+            self.assertEqual([item["symbol"] for item in capped], ["BBBUSDT"])
+            self.assertNotIn("绿色播报", capped[0]["text"])
+            book.settings["maxPerRound"] = 5
+            fourth = book.evaluate([plain], 21, now=start + 3 * step)
+            self.assertEqual(fourth[0]["text"], plain_base + green_note(4))
+
+    def test_green_count_resets_at_shanghai_midnight(self):
+        sample = band_row()
+        base = compose(sample, default_rules()[0])
+        self.assertTrue(base.startswith("🟢 ["))
+        step = MIN_DIRECTION_COOLDOWN_SEC
+        with tempfile.TemporaryDirectory() as directory:
+            book = BroadcastBook(Path(directory))
+            late = shanghai_epoch(2026, 11, 22, 23, 50)
+            nxt = shanghai_epoch(2026, 11, 23, 0, 20)
+            self.assertEqual(book.evaluate([sample], 1, now=late)[0]["text"], base)
+            self.assertEqual(book.evaluate([sample], 2, now=nxt)[0]["text"], base)
+
+        with tempfile.TemporaryDirectory() as directory:
+            book = BroadcastBook(Path(directory))
+            start = shanghai_epoch(2026, 11, 22, 20, 0)
+            for index in range(3):
+                made = book.evaluate([sample], 10 + index, now=start + index * step)
+                self.assertEqual(made[0]["text"], base)
+            fourth = book.evaluate([sample], 13, now=start + 3 * step)
+            self.assertEqual(fourth[0]["text"], base + green_note(4))
+            next_day = shanghai_epoch(2026, 11, 23, 10, 0)
+            self.assertEqual(book.evaluate([sample], 14, now=next_day)[0]["text"], base)
+            for index in range(1, 3):
+                made = book.evaluate([sample], 14 + index, now=next_day + index * step)
+                self.assertEqual(made[0]["text"], base)
+            again = book.evaluate([sample], 17, now=next_day + 3 * step)
+            self.assertEqual(again[0]["text"], base + green_note(4))
+
+    def test_saved_broadcasts_seed_the_green_count(self):
+        at = int(shanghai_epoch(2026, 11, 22, 12, 0) * 1000)
+        prefix = "\U0001F525\u3010OI\u22652000\u4e07\u3011 🟢 [BTCUSDT] 大额"
+        items = [
+            {"id": 1, "at": at, "symbol": "BTCUSDT", "text": "🟢 [BTCUSDT] 旧播报"},
+            {"id": 2, "at": at + 1_800_000, "symbol": "BTCUSDT", "text": prefix},
+            {
+                "id": 3,
+                "at": at + 3_600_000,
+                "symbol": "BTCUSDT",
+                "text": "🟢 [BTCUSDT] 再一条" + green_note(9),
+            },
+            {"id": 4, "at": at, "symbol": "BTCUSDT", "text": "⚪ [BTCUSDT] 白色"},
+            {"id": 5, "at": at - 86_400_000, "symbol": "BTCUSDT", "text": "🟢 [BTCUSDT] 昨天"},
+            {"id": 6, "at": at, "symbol": "ETHUSDT", "text": "🟢 [ETHUSDT] 别的币"},
+            {"id": 7, "at": 0, "symbol": "BTCUSDT", "text": "🟢 [BTCUSDT] 没有时间"},
+            {"id": 8, "at": at, "symbol": "", "text": "🟢 [ ] 没有币种"},
+        ]
+        sample = band_row(oi_value=25_000_000, value_delta=1_000_000, move=6, price_move=3)
+        base = compose(sample, default_rules()[0])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "broadcasts.json").write_text(
+                json.dumps({"nextId": 9, "items": items, "seen": {}}),
+                encoding="utf-8",
+            )
+            book = BroadcastBook(path)
+            made = book.evaluate([sample], 1, now=shanghai_epoch(2026, 11, 22, 18, 0))
+            self.assertEqual(made[0]["text"], base + green_note(4))
+
+    def test_two_rules_share_one_green_count_per_symbol(self):
+        rules = default_rules()
+        extra = dict(rules[0])
+        extra["id"] = "oi-extra"
+        sample = band_row()
+        base = compose(sample, rules[0])
+        start = shanghai_epoch(2026, 11, 22, 15, 0)
+        step = MIN_DIRECTION_COOLDOWN_SEC
+        with tempfile.TemporaryDirectory() as directory:
+            book = BroadcastBook(Path(directory))
+            book.replace_rules([rules[0], extra])
+            first = book.evaluate([sample], 1, now=start)
+            self.assertEqual([item["text"] for item in first], [base, base])
+            second = book.evaluate([sample], 2, now=start + step)
+            self.assertEqual(second[0]["text"], base)
+            self.assertEqual(second[1]["text"], base + green_note(4))
+
+    def test_fixed_rule_counts_green_broadcasts_without_the_tick_prefix(self):
+        rule = loose_rule()
+        sample = row(oi_value=50_000_000, value_move=4, price_move=2)
+        base = compose(sample, rule)
+        self.assertTrue(base.startswith("🟢 ["))
+        self.assertNotIn("\U0001F525", base)
+        start = shanghai_epoch(2026, 11, 22, 11, 0)
+        step = MIN_DIRECTION_COOLDOWN_SEC
+        with tempfile.TemporaryDirectory() as directory:
+            book = BroadcastBook(Path(directory))
+            book.replace_rules([rule])
+            for index in range(3):
+                made = book.evaluate([sample], 100 + index, now=start + index * step)
+                self.assertEqual(made[0]["text"], base)
+            fourth = book.evaluate([sample], 104, now=start + 3 * step)
+            self.assertEqual(fourth[0]["text"], base + green_note(4))
 
     def test_disabled_order_never_signs_a_request(self):
         class Finder:
