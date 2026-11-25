@@ -320,6 +320,8 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/health":
                 status = LOOP.scan_status()
                 self.send_json(200, {"ok": True, "broadcast": True, "autoTrade": False, **status})
+            elif parsed.path == "/api/holdings":
+                self.send_json(200, {"holdings": BOOK.holdings.list()})
             elif parsed.path == "/favicon.ico":
                 self.send_response(204)
                 self.end_headers()
@@ -335,6 +337,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"rules": BOOK.replace_rules(self.read_json().get("rules"))})
             elif parsed.path == "/api/settings":
                 self.send_json(200, {"settings": BOOK.update_settings(self.read_json())})
+            elif parsed.path == "/api/holdings":
+                body = self.read_json()
+                if "symbol" not in body:
+                    raise ValueError("需要币种")
+                self.send_json(200, BOOK.holdings.add(body.get("symbol"), MONITOR.known_symbols()))
             elif parsed.path == "/api/trade/preview":
                 self.guard_local()
                 self.send_json(200, DESK.preview(self.read_json()))
@@ -369,8 +376,15 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/trade/keys":
                 self.guard_local()
                 self.send_json(200, DESK.clear_keys())
+            elif parsed.path.startswith("/api/holdings/"):
+                raw = urllib.parse.unquote(parsed.path[len("/api/holdings/") :])
+                if not raw or "/" in raw:
+                    raise ValueError("币种无效")
+                self.send_json(200, BOOK.holdings.remove(raw))
             else:
                 self.send_json(404, {"error": "没有这个接口"})
+        except ValueError as exc:
+            self.send_json(400, {"error": str(exc)})
         except PermissionError as exc:
             self.send_json(403, {"error": str(exc)})
         except BrokenPipeError:

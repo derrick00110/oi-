@@ -8,6 +8,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from oi_monitor.broadcast import (
+    HOLDING_RISE_PREFIX,
+    HOLDING_STRONG_PREFIX,
+    HOLDING_WARN_DIRECTION,
+    HOLDING_WARN_PREFIX,
     MIN_DIRECTION_COOLDOWN_SEC,
     BroadcastBook,
     _front_cluster,
@@ -85,6 +89,40 @@ def band_row(**kwargs):
     values = {"move": 12, "price_move": 6, "oi_value": 7_500_000}
     values.update(kwargs)
     return row(**values)
+
+
+def _ticks(prices):
+    return [{"at": index, "oiValue": 1, "price": price} for index, price in enumerate(prices)]
+
+
+# Four, three, and two tick-to-tick price drops inside the 5-tick window.
+FALLING_TICKS = [10, 9.7, 9.4, 9.2, 9.0]
+THREE_DOWN_TICKS = [10, 9.5, 9.8, 9.2, 9.0]
+TWO_DOWN_TICKS = [10, 9.0, 9.4, 9.6, 9.2]
+
+
+def holding_row(
+    symbol="MANTRAUSDT",
+    base="MANTRA",
+    move=3.0,
+    price_move=-2.5,
+    oi_value=20_600_000,
+    value_delta=600_000,
+    prices=FALLING_TICKS,
+    ready=True,
+):
+    item = band_row(
+        symbol=symbol,
+        base=base,
+        move=move,
+        value_move=move,
+        price_move=price_move,
+        oi_value=oi_value,
+        value_delta=value_delta,
+    )
+    item["cycle"]["ready"] = ready
+    item["cycle"]["ticks"] = [] if prices is None else _ticks(prices)
+    return item
 
 
 class BroadcastTest(unittest.TestCase):
@@ -402,9 +440,18 @@ class BroadcastTest(unittest.TestCase):
         self.assertEqual(_front_cluster("🟢"), "🟢")
         self.assertEqual(_front_cluster("⚪", fire=True), "🔥 ⚪")
         self.assertEqual(
-            _front_cluster("🟢", repeat=True, holding=True, fire=True),
-            "🔁 🚨 🔥 🟢",
+            _front_cluster("🟢", repeat=True, holding=HOLDING_RISE_PREFIX, fire=True),
+            "🔁 【持仓】 🔥 🟢",
         )
+        self.assertEqual(
+            _front_cluster("⚪", repeat=True, holding=True, fire=True),
+            "🔁 🚨【持仓警示】 🔥 ⚪",
+        )
+        self.assertEqual(
+            _front_cluster("⚪", holding=HOLDING_STRONG_PREFIX, fire=True),
+            "🚨🚨【持仓重要提醒·连跌OI降共振】 🔥 ⚪",
+        )
+        self.assertNotIn("\U0001F4CC", _front_cluster("🟢", holding=HOLDING_RISE_PREFIX))
         self.assertFalse(_holding_warning({}))
 
     def test_green_repeat_note_starts_at_the_fourth_sent_broadcast(self):
@@ -576,6 +623,186 @@ class BroadcastTest(unittest.TestCase):
             fourth = book.evaluate([sample], 104, now=start + 3 * step)
             self.assertEqual(fourth[0]["text"], green_repeat(base, 4))
             self.assertNotIn(PREFIX, fourth[0]["text"])
+
+    def test_holding_rise_fall_and_strong_alerts(self):
+        rule = default_rules()[0]
+        held = ["MANTRAUSDT"]
+        rise = compose(
+            holding_row(move=6, price_move=3, oi_value=21_200_000, value_delta=1_200_000),
+            rule,
+            holdings=held,
+        )
+        self.assertEqual(
+            rise,
+            "【持仓】 🔥 🟢 [MANTRAUSDT] 币安未平仓金额 +6.0%，第 1 次到第 5 次刻度价格上涨 3.0%，"
+            + "第 1 次刻度 2000 万美元，第 5 次刻度 2120 万美元，未平仓金额：2120 万美元，"
+            + "未平仓金额/市值比率：0.5%，24 小时价格变动：-4.2%。优先推报，做多信号",
+        )
+        self.assertNotIn("\U0001F4CC", rise)
+        self.assertNotIn("🚨", rise)
+        self.assertTrue(green_repeat(rise, 4).startswith("🔁 【持仓】 🔥 🟢 ["))
+        self.assertTrue(green_repeat(rise, 4).endswith(green_note(4)))
+        self.assertLess(rise.index("【持仓】"), rise.index("🔥"))
+        self.assertLess(rise.index("🔥"), rise.index("🟢"))
+        self.assertIsNone(
+            compose(
+                holding_row(move=3, price_move=2, oi_value=8_000_000, value_delta=200_000),
+                rule,
+                holdings=held,
+            )
+        )
+        plain_rise = compose(
+            holding_row(symbol="BTCUSDT", base="BTC", move=6, price_move=3, oi_value=21_200_000, value_delta=1_200_000),
+            rule,
+            holdings=held,
+        )
+        self.assertTrue(plain_rise.startswith("🔥 🟢 ["), plain_rise)
+        self.assertNotIn("【持仓】", plain_rise)
+
+        text = compose(holding_row(), rule, holdings=held)
+        self.assertEqual(
+            text,
+            HOLDING_WARN_PREFIX
+            + " "
+            + PREFIX
+            + "⚪ [MANTRAUSDT] 币安未平仓金额 +3.0%，第 1 次到第 5 次刻度价格下跌 2.5%，"
+            + "第 1 次刻度 2000 万美元，第 5 次刻度 2060 万美元，未平仓金额：2060 万美元，"
+            + "未平仓金额/市值比率：0.5%，24 小时价格变动：-4.2%。"
+            + "持仓币价格下跌，需紧盯。可能为出货、洗盘或蓄力",
+        )
+        self.assertNotIn("🚨🚨", text)
+        self.assertLess(text.index("🚨"), text.index("🔥"))
+        self.assertLess(text.index("🔥"), text.index("⚪"))
+
+        down = holding_row(move=-3, price_move=-2, oi_value=7_760_000, value_delta=-240_000)
+        down_text = compose(down, rule, holdings=held)
+        self.assertEqual(
+            down_text,
+            HOLDING_STRONG_PREFIX
+            + " ⚪ [MANTRAUSDT] 币安未平仓金额 -3.0%，第 1 次到第 5 次刻度价格下跌 2.0%，"
+            + "第 1 次刻度 800 万美元，第 5 次刻度 776 万美元，未平仓金额：776 万美元，"
+            + "未平仓金额/市值比率：0.5%，24 小时价格变动：-4.2%。"
+            + "持仓币连续下跌且未平仓金额同步下降，重要提醒，需紧盯。弃盘行情，需观望",
+        )
+        self.assertNotIn("🔥", down_text)
+        self.assertNotIn("【持仓】 ", down_text)
+
+        self.assertIn("持仓币价格下跌，需紧盯。", compose(holding_row(move=3, price_move=-2), rule, holdings=held))
+        self.assertIsNone(compose(holding_row(move=3, price_move=-1.999), rule, holdings=held))
+        self.assertIsNone(compose(holding_row(move=2.999, price_move=-2.5), rule, holdings=held))
+        self.assertIsNone(compose(holding_row(move=4, price_move=-1.9, oi_value=8_000_000, value_delta=300_000), rule, holdings=held))
+        self.assertIsNone(compose(holding_row(move=2.9, price_move=-3, oi_value=8_000_000, value_delta=200_000), rule, holdings=held))
+        self.assertIsNone(compose(holding_row(symbol="BTCUSDT", base="BTC"), rule, holdings=held))
+        mild_steps = compose(
+            holding_row(prices=TWO_DOWN_TICKS, move=-4, price_move=-2.5, oi_value=8_000_000, value_delta=-300_000),
+            rule,
+            holdings=held,
+        )
+        self.assertTrue(mild_steps.startswith(HOLDING_WARN_PREFIX + " "), mild_steps)
+        self.assertNotIn("重要提醒", mild_steps)
+        oi_up = compose(
+            holding_row(prices=THREE_DOWN_TICKS, move=4, price_move=-2.5, oi_value=8_000_000, value_delta=300_000),
+            rule,
+            holdings=held,
+        )
+        self.assertTrue(oi_up.startswith(HOLDING_WARN_PREFIX + " "), oi_up)
+        self.assertNotIn("重要提醒", oi_up)
+        strong = compose(
+            holding_row(prices=THREE_DOWN_TICKS, move=-4, price_move=-2.5, oi_value=8_000_000, value_delta=-300_000),
+            rule,
+            holdings=held,
+        )
+        self.assertTrue(strong.startswith(HOLDING_STRONG_PREFIX + " "), strong)
+        self.assertIn("持仓币连续下跌且未平仓金额同步下降，重要提醒，需紧盯。弃盘行情，需观望", strong)
+        missing_ticks = compose(
+            holding_row(prices=None, move=-4, price_move=-2.5, oi_value=8_000_000, value_delta=-300_000),
+            rule,
+            holdings=held,
+        )
+        self.assertTrue(missing_ticks.startswith(HOLDING_WARN_PREFIX + " "), missing_ticks)
+        self.assertNotIn("重要提醒", missing_ticks)
+        waiting = holding_row()
+        waiting["cycle"]["ready"] = False
+        self.assertIsNone(compose(waiting, rule, holdings=held))
+
+        crossed = holding_row(move=8.4, price_move=-2.5, oi_value=20_600_000, value_delta=1_600_000)
+        crossed_text = compose(crossed, rule, holdings=held)
+        self.assertTrue(crossed_text.startswith(HOLDING_WARN_PREFIX + " " + PREFIX + "⚪ ["), crossed_text)
+        watershed = "未平仓金额达到2000万关键分水岭，庄家常在此离场或加速拉升"
+        self.assertLess(crossed_text.index(watershed), crossed_text.index("持仓币价格下跌，需紧盯。"))
+        self.assertLess(crossed_text.index("持仓币价格下跌，需紧盯。"), crossed_text.index("可能为出货、洗盘或蓄力"))
+
+        shallow = compose(
+            holding_row(move=-9, price_move=-1, oi_value=8_000_000, value_delta=-700_000),
+            rule,
+            holdings=held,
+        )
+        self.assertTrue(shallow.startswith("⚪ ["), shallow)
+        self.assertNotIn("【持仓】", shallow)
+        self.assertNotIn("🚨", shallow)
+        self.assertIn("弃盘行情，需观望", shallow)
+
+        outsider = compose(band_row(value_move=-12, price_move=-3), rule, holdings=held)
+        self.assertTrue(outsider.startswith("⚪ ["), outsider)
+        self.assertNotIn("持仓", outsider)
+        self.assertIn("弃盘行情，需观望", outsider)
+
+        fixed = compose(
+            row(symbol="MANTRAUSDT", base="MANTRA", value_move=-4, price_move=-1),
+            loose_rule(),
+            holdings=held,
+        )
+        self.assertTrue(fixed.startswith("⚪ ["), fixed)
+        self.assertNotIn("🚨", fixed)
+        fixed_up = compose(
+            row(symbol="MANTRAUSDT", base="MANTRA", value_move=4, price_move=2),
+            loose_rule(),
+            holdings=held,
+        )
+        self.assertTrue(fixed_up.startswith("【持仓】 🟢 ["), fixed_up)
+        self.assertNotIn("\U0001F4CC", fixed_up)
+        self.assertNotIn("🚨", fixed_up)
+
+    def test_holding_warning_uses_its_own_cooldown_key(self):
+        green = band_row(symbol="MANTRAUSDT", base="MANTRA", move=12, price_move=6)
+        warn = holding_row(move=3, price_move=-2.5, oi_value=7_500_000, value_delta=200_000)
+        down = holding_row(move=-3, price_move=-2.5, oi_value=7_500_000, value_delta=-200_000)
+        with tempfile.TemporaryDirectory() as directory:
+            book = BroadcastBook(Path(directory))
+            self.assertEqual(book.holdings.list(), ["MANTRAUSDT"])
+            first = book.evaluate([green], 1, now=10_000)
+            self.assertEqual(len(first), 1)
+            self.assertTrue(first[0]["text"].startswith("【持仓】 🟢 ["), first[0]["text"])
+            self.assertNotIn("\U0001F4CC", first[0]["text"])
+            self.assertNotIn("🚨", first[0]["text"])
+            warned = book.evaluate([warn], 2, now=10_000 + 300)
+            self.assertEqual(len(warned), 1)
+            self.assertTrue(warned[0]["text"].startswith(HOLDING_WARN_PREFIX + " "), warned[0]["text"])
+            self.assertIn("持仓币价格下跌，需紧盯。", warned[0]["text"])
+            self.assertIn(f"oi-dynamic|MANTRAUSDT|{HOLDING_WARN_DIRECTION}", book.seen)
+            self.assertIn("oi-dynamic|MANTRAUSDT|up", book.seen)
+            self.assertNotIn("oi-dynamic|MANTRAUSDT|down", book.seen)
+            self.assertEqual(book.evaluate([warn], 3, now=10_000 + 600), [])
+            self.assertEqual(book.evaluate([down], 4, now=10_000 + 900), [])
+            self.assertEqual(book.evaluate([green], 5, now=10_000 + 900), [])
+            quiet = book.evaluate([band_row(value_move=-12, price_move=-3)], 6, now=10_000)
+            self.assertEqual(len(quiet), 1)
+            self.assertNotIn("持仓", quiet[0]["text"])
+            self.assertTrue(quiet[0]["text"].startswith("⚪ ["))
+            again = book.evaluate([warn], 7, now=10_000 + 300 + MIN_DIRECTION_COOLDOWN_SEC)
+            self.assertEqual(len(again), 1)
+            self.assertIn(f"oi-dynamic|MANTRAUSDT|{HOLDING_WARN_DIRECTION}", book.seen)
+
+            book.holdings.remove("MANTRA")
+            self.assertEqual(book.qualify([warn]), [])
+            loud = holding_row(move=-12, price_move=-3, oi_value=8_000_000, value_delta=-1_000_000)
+            plain = book.qualify([loud])
+            self.assertEqual(len(plain), 1)
+            self.assertNotIn("持仓", plain[0]["text"])
+            self.assertIn("弃盘行情，需观望", plain[0]["text"])
+            book.holdings.add("MANTRA")
+            warned_again = book.qualify([loud])
+            self.assertTrue(warned_again[0]["text"].startswith(HOLDING_STRONG_PREFIX), warned_again[0]["text"])
 
     def test_disabled_order_never_signs_a_request(self):
         class Finder:

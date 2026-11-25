@@ -24,6 +24,7 @@ class Monitor:
         self._cache: dict[int, tuple[float, dict, float]] = {}
         self._inflight: dict[int, threading.Event] = {}
         self._fail: dict[int, Exception] = {}
+        self._known: set[str] | None = None
 
     def scan(self, limit: int | None, fresh: bool = False) -> dict:
         key = 0 if limit is None else limit
@@ -105,6 +106,8 @@ class Monitor:
                 log.warning("资金费率没取到：%s", exc)
                 premium = {}
         bases = usdt_perpetuals(exchange_info)
+        with self._lock:
+            self._known = set(bases) or None
         prices = index_tickers(tickers)
         universe = []
         for symbol, base in bases.items():
@@ -167,6 +170,13 @@ class Monitor:
             "errors": errors[:12],
             "rows": rows,
         }
+
+    def known_symbols(self) -> set[str] | None:
+        """USDT perpetuals from the latest exchangeInfo, or None before the first scan."""
+        with self._lock:
+            if not self._known:
+                return None
+            return set(self._known)
 
     def find_row(self, symbol: str) -> dict | None:
         with self._lock:
