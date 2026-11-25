@@ -352,6 +352,8 @@ def funding_phrase(rate) -> str:
 # Display only. Tick 5 notional at or above this is a louder broadcast, not a new gate.
 TICK_EMPHASIS_USD = 20_000_000
 TICK_EMPHASIS_PREFIX = "\U0001F525\u3010OI\u22652000\u4e07\u3011 "
+# Outermost mark for a coin's 4th+ green broadcast of the Shanghai day. Other prefixes stay inside the text.
+GREEN_REPEAT_PREFIX = "\U0001F501 "
 # Bullish direction emoji. Asia/Shanghai matches the daily memory files (UTC+8, no daylight saving).
 GREEN_MARK = "\U0001F7E2"
 SHANGHAI = timezone(timedelta(hours=8))
@@ -378,6 +380,17 @@ def _green_day_note(count: int) -> str:
     if count < 4:
         return ""
     return f"\u3002\u26a0\ufe0f\u4eca\u65e5\u7b2c {count} \u6b21\u7eff\u8272\u64ad\u62a5"
+
+
+def _apply_green_repeat(text: str, count: int) -> str:
+    """4th+ green of the day: leading repeat mark, then the broadcast, then the trailing count.
+
+    Call this after any other prefix so the repeat mark stays first.
+    """
+    note = _green_day_note(count)
+    if not note:
+        return text
+    return GREEN_REPEAT_PREFIX + text + note
 
 
 def _clean_green_daily(raw) -> dict:
@@ -635,9 +648,7 @@ class BroadcastBook:
                     continue
                 if GREEN_MARK in text:
                     count = self._next_green_count(row["symbol"], moment)
-                    note = _green_day_note(count)
-                    if note:
-                        text += note
+                    text = _apply_green_repeat(text, count)
                 item = {
                     "id": self.next_id,
                     "at": int(moment * 1000),
