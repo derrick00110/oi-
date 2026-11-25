@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from oi_monitor.broadcast import (
     MIN_DIRECTION_COOLDOWN_SEC,
     BroadcastBook,
+    _front_cluster,
+    _holding_warning,
     clean_rules,
     compose,
     default_rules,
@@ -52,12 +54,17 @@ def row(symbol="BTCUSDT", base="BTC", move=6.5, oi_move=None, value_move=None, p
     }
 
 
-PREFIX = "\U0001F525\u3010OI\u22652000\u4e07\u3011 "
+PREFIX = "\U0001F525 "
+REPEAT = "\U0001F501 "
 SHANGHAI_TZ = timezone(timedelta(hours=8))
 
 
 def green_note(count: int) -> str:
     return f"\u3002\u26a0\ufe0f\u4eca\u65e5\u7b2c {count} \u6b21\u7eff\u8272\u64ad\u62a5"
+
+
+def green_repeat(text: str, count: int) -> str:
+    return REPEAT + text + green_note(count)
 
 
 def shanghai_epoch(year, month, day, hour, minute, second=0) -> float:
@@ -321,6 +328,8 @@ class BroadcastTest(unittest.TestCase):
                 rule,
             )
             self.assertTrue(large.startswith(PREFIX + mark + " ["), large)
+            self.assertNotIn("\u3010", large)
+            self.assertNotIn("\U0001F6A8", large)
             self.assertIn(fact, large)
             self.assertNotRegex(large.split("] ", 1)[1], r"[A-Za-z]")
             small = compose(
@@ -389,6 +398,15 @@ class BroadcastTest(unittest.TestCase):
         self.assertTrue(fixed.startswith("🟢 ["), fixed)
         self.assertNotIn("\U0001F525", fixed)
 
+    def test_front_cluster_order_keeps_a_holding_slot(self):
+        self.assertEqual(_front_cluster("🟢"), "🟢")
+        self.assertEqual(_front_cluster("⚪", fire=True), "🔥 ⚪")
+        self.assertEqual(
+            _front_cluster("🟢", repeat=True, holding=True, fire=True),
+            "🔁 🚨 🔥 🟢",
+        )
+        self.assertFalse(_holding_warning({}))
+
     def test_green_repeat_note_starts_at_the_fourth_sent_broadcast(self):
         rule = default_rules()[0]
         sample = band_row(oi_value=25_000_000, value_delta=1_000_000, move=6, price_move=3)
@@ -401,6 +419,7 @@ class BroadcastTest(unittest.TestCase):
         self.assertTrue(white_base.startswith(PREFIX + "⚪ ["))
         self.assertNotIn("绿色播报", base)
         self.assertNotIn("\u26a0", base)
+        self.assertNotIn(REPEAT.strip(), base)
         start = shanghai_epoch(2026, 11, 22, 10, 0)
         step = MIN_DIRECTION_COOLDOWN_SEC
         with tempfile.TemporaryDirectory() as directory:
@@ -410,7 +429,7 @@ class BroadcastTest(unittest.TestCase):
                 texts = [hit["text"] for hit in hits]
                 self.assertIn(base, texts)
                 self.assertIn(white_base, texts)
-                self.assertTrue(all("绿色播报" not in text for text in texts))
+                self.assertTrue(all("绿色播报" not in text and REPEAT.strip() not in text for text in texts))
             first = book.evaluate([sample], 1, now=start)
             self.assertEqual(first[0]["text"], base)
             self.assertEqual(book.evaluate([sample], 1, now=start + step), [])
@@ -426,10 +445,12 @@ class BroadcastTest(unittest.TestCase):
 
             resumed = BroadcastBook(Path(directory))
             fourth = resumed.evaluate([sample], 7, now=start + 3 * step)
-            self.assertEqual(fourth[0]["text"], base + green_note(4))
+            self.assertEqual(fourth[0]["text"], green_repeat(base, 4))
+            self.assertTrue(fourth[0]["text"].startswith(REPEAT + PREFIX + "🟢 ["))
+            self.assertTrue(fourth[0]["text"].endswith(green_note(4)))
             self.assertEqual(compose(sample, rule), base)
             fifth = resumed.evaluate([sample], 8, now=start + 4 * step)
-            self.assertEqual(fifth[0]["text"], base + green_note(5))
+            self.assertEqual(fifth[0]["text"], green_repeat(base, 5))
             eth_again = resumed.evaluate([other], 9, now=start + step)
             self.assertEqual(eth_again[0]["text"], other_base)
 
@@ -441,7 +462,7 @@ class BroadcastTest(unittest.TestCase):
             path.write_text(json.dumps(saved), encoding="utf-8")
             kept = BroadcastBook(Path(directory))
             sixth = kept.evaluate([sample], 10, now=start + 5 * step)
-            self.assertEqual(sixth[0]["text"], base + green_note(6))
+            self.assertEqual(sixth[0]["text"], green_repeat(base, 6))
 
     def test_capped_and_other_direction_greens_do_not_share_a_count(self):
         plain = band_row(symbol="AAAUSDT", base="AAA", move=20)
@@ -460,7 +481,7 @@ class BroadcastTest(unittest.TestCase):
             self.assertNotIn("绿色播报", capped[0]["text"])
             book.settings["maxPerRound"] = 5
             fourth = book.evaluate([plain], 21, now=start + 3 * step)
-            self.assertEqual(fourth[0]["text"], plain_base + green_note(4))
+            self.assertEqual(fourth[0]["text"], green_repeat(plain_base, 4))
 
     def test_green_count_resets_at_shanghai_midnight(self):
         sample = band_row()
@@ -481,14 +502,15 @@ class BroadcastTest(unittest.TestCase):
                 made = book.evaluate([sample], 10 + index, now=start + index * step)
                 self.assertEqual(made[0]["text"], base)
             fourth = book.evaluate([sample], 13, now=start + 3 * step)
-            self.assertEqual(fourth[0]["text"], base + green_note(4))
+            self.assertEqual(fourth[0]["text"], green_repeat(base, 4))
+            self.assertTrue(fourth[0]["text"].startswith(REPEAT + "🟢 ["))
             next_day = shanghai_epoch(2026, 11, 23, 10, 0)
             self.assertEqual(book.evaluate([sample], 14, now=next_day)[0]["text"], base)
             for index in range(1, 3):
                 made = book.evaluate([sample], 14 + index, now=next_day + index * step)
                 self.assertEqual(made[0]["text"], base)
             again = book.evaluate([sample], 17, now=next_day + 3 * step)
-            self.assertEqual(again[0]["text"], base + green_note(4))
+            self.assertEqual(again[0]["text"], green_repeat(base, 4))
 
     def test_saved_broadcasts_seed_the_green_count(self):
         at = int(shanghai_epoch(2026, 11, 22, 12, 0) * 1000)
@@ -518,7 +540,7 @@ class BroadcastTest(unittest.TestCase):
             )
             book = BroadcastBook(path)
             made = book.evaluate([sample], 1, now=shanghai_epoch(2026, 11, 22, 18, 0))
-            self.assertEqual(made[0]["text"], base + green_note(4))
+            self.assertEqual(made[0]["text"], green_repeat(base, 4))
 
     def test_two_rules_share_one_green_count_per_symbol(self):
         rules = default_rules()
@@ -535,7 +557,7 @@ class BroadcastTest(unittest.TestCase):
             self.assertEqual([item["text"] for item in first], [base, base])
             second = book.evaluate([sample], 2, now=start + step)
             self.assertEqual(second[0]["text"], base)
-            self.assertEqual(second[1]["text"], base + green_note(4))
+            self.assertEqual(second[1]["text"], green_repeat(base, 4))
 
     def test_fixed_rule_counts_green_broadcasts_without_the_tick_prefix(self):
         rule = loose_rule()
@@ -552,7 +574,8 @@ class BroadcastTest(unittest.TestCase):
                 made = book.evaluate([sample], 100 + index, now=start + index * step)
                 self.assertEqual(made[0]["text"], base)
             fourth = book.evaluate([sample], 104, now=start + 3 * step)
-            self.assertEqual(fourth[0]["text"], base + green_note(4))
+            self.assertEqual(fourth[0]["text"], green_repeat(base, 4))
+            self.assertNotIn(PREFIX, fourth[0]["text"])
 
     def test_disabled_order_never_signs_a_request(self):
         class Finder:
