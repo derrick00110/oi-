@@ -351,9 +351,10 @@ def funding_phrase(rate) -> str:
 
 # Display only. Tick 5 notional at or above this is a louder broadcast, not a new gate.
 TICK_EMPHASIS_USD = 20_000_000
-TICK_EMPHASIS_PREFIX = "\U0001F525\u3010OI\u22652000\u4e07\u3011 "
-# Outermost mark for a coin's 4th+ green broadcast of the Shanghai day. Other prefixes stay inside the text.
-GREEN_REPEAT_PREFIX = "\U0001F501 "
+# Front cluster, left to right, one space apart: repeat, holding, fire, direction.
+REPEAT_MARK = "\U0001F501"
+HOLDING_MARK = "\U0001F6A8"
+FIRE_MARK = "\U0001F525"
 # Bullish direction emoji. Asia/Shanghai matches the daily memory files (UTC+8, no daylight saving).
 GREEN_MARK = "\U0001F7E2"
 SHANGHAI = timezone(timedelta(hours=8))
@@ -364,15 +365,32 @@ def shanghai_day(moment: float) -> str:
     return datetime.fromtimestamp(float(moment), SHANGHAI).strftime("%Y-%m-%d")
 
 
-def _tick_lead(mark: str, fifth) -> str:
-    """Direction emoji, with a louder prefix when tick 5 is at least 20 million USD."""
+def _holding_warning(_row: dict) -> bool:
+    """Hook for a later holdings alert. Stays false until that signal exists."""
+    return False
+
+
+def _front_cluster(direction: str, *, fire: bool = False, holding: bool = False, repeat: bool = False) -> str:
+    """Emoji marks at the very front. Order is repeat, holding, fire, then the direction mark."""
+    marks = []
+    if repeat:
+        marks.append(REPEAT_MARK)
+    if holding:
+        marks.append(HOLDING_MARK)
+    if fire:
+        marks.append(FIRE_MARK)
+    marks.append(direction)
+    return " ".join(marks)
+
+
+def _tick_lead(mark: str, fifth, *, holding: bool = False) -> str:
+    """Direction emoji, and a fire mark when tick 5 is at least 20 million USD."""
     try:
         current = float(fifth)
     except (TypeError, ValueError):
-        return mark
-    if current >= TICK_EMPHASIS_USD:
-        return TICK_EMPHASIS_PREFIX + mark
-    return mark
+        current = None
+    fire = current is not None and current >= TICK_EMPHASIS_USD
+    return _front_cluster(mark, fire=fire, holding=holding)
 
 
 def _green_day_note(count: int) -> str:
@@ -383,14 +401,14 @@ def _green_day_note(count: int) -> str:
 
 
 def _apply_green_repeat(text: str, count: int) -> str:
-    """4th+ green of the day: leading repeat mark, then the broadcast, then the trailing count.
+    """4th+ green of the day: repeat mark first, then the broadcast, then the trailing count.
 
-    Call this after any other prefix so the repeat mark stays first.
+    The broadcast already starts with the rest of the front cluster, so this stays outermost.
     """
     note = _green_day_note(count)
     if not note:
         return text
-    return GREEN_REPEAT_PREFIX + text + note
+    return f"{REPEAT_MARK} {text}{note}"
 
 
 def _clean_green_daily(raw) -> dict:
@@ -453,7 +471,7 @@ def _tick_price_phrase(price_pct) -> str:
 def _cycle_sentence(row: dict, cycle: dict, conclusion: str, mark: str) -> str:
     ratio = "暂无" if row.get("oiToMarketCapPct") is None else f"{row['oiToMarketCapPct']:.1f}%"
     symbol = row.get("symbol") or row.get("base")
-    lead = _tick_lead(mark, cycle.get("fifth"))
+    lead = _tick_lead(mark, cycle.get("fifth"), holding=_holding_warning(row))
     return (
         f"{lead} [{symbol}] 币安未平仓金额 {signed_pct(cycle.get('oiValuePct'))}，"
         f"{_tick_price_phrase(cycle.get('pricePct'))}，"
@@ -468,8 +486,9 @@ def _cycle_sentence(row: dict, cycle: dict, conclusion: str, mark: str) -> str:
 def _sentence(row: dict, rule: dict, change: dict, conclusion: str, mark: str) -> str:
     ratio = "暂无" if row.get("oiToMarketCapPct") is None else f"{row['oiToMarketCapPct']:.1f}%"
     symbol = row.get("symbol") or row.get("base")
+    lead = _front_cluster(mark, holding=_holding_warning(row))
     return (
-        f"{mark} [{symbol}] 币安未平仓金额 {signed_pct(change.get('oiValuePct'))}，"
+        f"{lead} [{symbol}] 币安未平仓金额 {signed_pct(change.get('oiValuePct'))}，"
         f"{price_phrase(WINDOW_SECONDS[rule['window']], change.get('pricePct'))}，"
         f"未平仓金额：{usd_text(row.get('oiValue'))}，"
         f"未平仓金额/市值比率：{ratio}，"

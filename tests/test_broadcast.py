@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from oi_monitor.broadcast import (
     MIN_DIRECTION_COOLDOWN_SEC,
     BroadcastBook,
+    _front_cluster,
+    _holding_warning,
     clean_rules,
     compose,
     default_rules,
@@ -52,7 +54,7 @@ def row(symbol="BTCUSDT", base="BTC", move=6.5, oi_move=None, value_move=None, p
     }
 
 
-PREFIX = "\U0001F525\u3010OI\u22652000\u4e07\u3011 "
+PREFIX = "\U0001F525 "
 REPEAT = "\U0001F501 "
 SHANGHAI_TZ = timezone(timedelta(hours=8))
 
@@ -326,6 +328,8 @@ class BroadcastTest(unittest.TestCase):
                 rule,
             )
             self.assertTrue(large.startswith(PREFIX + mark + " ["), large)
+            self.assertNotIn("\u3010", large)
+            self.assertNotIn("\U0001F6A8", large)
             self.assertIn(fact, large)
             self.assertNotRegex(large.split("] ", 1)[1], r"[A-Za-z]")
             small = compose(
@@ -393,6 +397,15 @@ class BroadcastTest(unittest.TestCase):
         fixed = compose(row(oi_value=90_000_000, value_move=4, price_move=2), loose_rule())
         self.assertTrue(fixed.startswith("🟢 ["), fixed)
         self.assertNotIn("\U0001F525", fixed)
+
+    def test_front_cluster_order_keeps_a_holding_slot(self):
+        self.assertEqual(_front_cluster("🟢"), "🟢")
+        self.assertEqual(_front_cluster("⚪", fire=True), "🔥 ⚪")
+        self.assertEqual(
+            _front_cluster("🟢", repeat=True, holding=True, fire=True),
+            "🔁 🚨 🔥 🟢",
+        )
+        self.assertFalse(_holding_warning({}))
 
     def test_green_repeat_note_starts_at_the_fourth_sent_broadcast(self):
         rule = default_rules()[0]
