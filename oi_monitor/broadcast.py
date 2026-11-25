@@ -13,6 +13,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from oi_monitor.holdings import HoldingsBook
 from oi_monitor.metrics import judge, screen_change
 
 SCAN_PERIOD_SEC = 300
@@ -353,8 +354,17 @@ def funding_phrase(rate) -> str:
 TICK_EMPHASIS_USD = 20_000_000
 # Front cluster, left to right, one space apart: repeat, holding, fire, direction.
 REPEAT_MARK = "\U0001F501"
-HOLDING_MARK = "\U0001F6A8"
 FIRE_MARK = "\U0001F525"
+# Holdings. Rising keeps the 10/9/5 tiers and only adds a mark. Falling uses the lower gate.
+HOLDING_PRICE_DROP_PCT = 2.0
+HOLDING_OI_MOVE_PCT = 3.0
+HOLDING_MIN_DOWN_STEPS = 3
+HOLDING_RISE_PREFIX = "\u3010\u6301\u4ed3\u3011"
+HOLDING_WARN_PREFIX = "\U0001F6A8\u3010\u6301\u4ed3\u8b66\u793a\u3011"
+HOLDING_STRONG_PREFIX = "\U0001F6A8\U0001F6A8\u3010\u6301\u4ed3\u91cd\u8981\u63d0\u9192\u00b7\u8fde\u8dccOI\u964d\u5171\u632f\u3011"
+HOLDING_FALL_NOTE = "持仓币价格下跌，需紧盯"
+HOLDING_STRONG_NOTE = "持仓币连续下跌且未平仓金额同步下降，重要提醒，需紧盯"
+HOLDING_WARN_DIRECTION = "holding-warn"
 # Bullish direction emoji. Asia/Shanghai matches the daily memory files (UTC+8, no daylight saving).
 GREEN_MARK = "\U0001F7E2"
 SHANGHAI = timezone(timedelta(hours=8))
@@ -366,24 +376,26 @@ def shanghai_day(moment: float) -> str:
 
 
 def _holding_warning(_row: dict) -> bool:
-    """Hook for a later holdings alert. Stays false until that signal exists."""
+    """A row by itself is not a holding alert. describe() fills the slot."""
     return False
 
 
-def _front_cluster(direction: str, *, fire: bool = False, holding: bool = False, repeat: bool = False) -> str:
+def _front_cluster(direction: str, *, fire: bool = False, holding: str | bool = False, repeat: bool = False) -> str:
     """Emoji marks at the very front. Order is repeat, holding, fire, then the direction mark."""
     marks = []
     if repeat:
         marks.append(REPEAT_MARK)
-    if holding:
-        marks.append(HOLDING_MARK)
+    if holding is True:
+        marks.append(HOLDING_WARN_PREFIX)
+    elif holding:
+        marks.append(str(holding))
     if fire:
         marks.append(FIRE_MARK)
     marks.append(direction)
     return " ".join(marks)
 
 
-def _tick_lead(mark: str, fifth, *, holding: bool = False) -> str:
+def _tick_lead(mark: str, fifth, *, holding: str | bool = False) -> str:
     """Direction emoji, and a fire mark when tick 5 is at least 20 million USD."""
     try:
         current = float(fifth)
@@ -468,10 +480,10 @@ def _tick_price_phrase(price_pct) -> str:
     return f"第 1 次到第 5 次刻度价格{direction} {abs(price_pct):.1f}%"
 
 
-def _cycle_sentence(row: dict, cycle: dict, conclusion: str, mark: str) -> str:
+def _cycle_sentence(row: dict, cycle: dict, conclusion: str, mark: str, holding: str | bool = False) -> str:
     ratio = "暂无" if row.get("oiToMarketCapPct") is None else f"{row['oiToMarketCapPct']:.1f}%"
     symbol = row.get("symbol") or row.get("base")
-    lead = _tick_lead(mark, cycle.get("fifth"), holding=_holding_warning(row))
+    lead = _tick_lead(mark, cycle.get("fifth"), holding=holding)
     return (
         f"{lead} [{symbol}] 币安未平仓金额 {signed_pct(cycle.get('oiValuePct'))}，"
         f"{_tick_price_phrase(cycle.get('pricePct'))}，"
@@ -483,10 +495,10 @@ def _cycle_sentence(row: dict, cycle: dict, conclusion: str, mark: str) -> str:
     )
 
 
-def _sentence(row: dict, rule: dict, change: dict, conclusion: str, mark: str) -> str:
+def _sentence(row: dict, rule: dict, change: dict, conclusion: str, mark: str, holding: str | bool = False) -> str:
     ratio = "暂无" if row.get("oiToMarketCapPct") is None else f"{row['oiToMarketCapPct']:.1f}%"
     symbol = row.get("symbol") or row.get("base")
-    lead = _front_cluster(mark, holding=_holding_warning(row))
+    lead = _front_cluster(mark, holding=holding)
     return (
         f"{lead} [{symbol}] 币安未平仓金额 {signed_pct(change.get('oiValuePct'))}，"
         f"{price_phrase(WINDOW_SECONDS[rule['window']], change.get('pricePct'))}，"
@@ -497,8 +509,88 @@ def _sentence(row: dict, rule: dict, change: dict, conclusion: str, mark: str) -
     )
 
 
-def describe(row: dict, rule: dict, chop_pct: float = 0.5) -> dict | None:
+def _is_holding(symbol, holdings) -> bool:
+    if not holdings or not symbol:
+        return False
+    if isinstance(holdings, str):
+        holdings = [holdings]
+    if not isinstance(holdings, (list, tuple, set)):
+        return False
+    wanted = {item.strip().upper() for item in holdings if isinstance(item, str) and item.strip()}
+    return str(symbol).strip().upper() in wanted
+
+
+def _price_is_falling(price_pct) -> bool:
+    """True when the window price itself is down, matching the 下跌 phrase."""
+    try:
+        return float(price_pct) < 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _price_is_rising(price_pct) -> bool:
+    """True when the window price itself is up, matching the 上涨 phrase."""
+    try:
+        return float(price_pct) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _down_steps(ticks) -> int | None:
+    """Tick-to-tick price drops across the 5-tick window. None when a price is missing."""
+    if not isinstance(ticks, list) or len(ticks) != 5:
+        return None
+    prices = []
+    for tick in ticks:
+        if not isinstance(tick, dict):
+            return None
+        raw = tick.get("price")
+        if raw is None:
+            return None
+        try:
+            prices.append(float(raw))
+        except (TypeError, ValueError):
+            return None
+    return sum(1 for previous, nxt in zip(prices, prices[1:]) if nxt < previous)
+
+
+def _window_numbers(cycle: dict) -> tuple[float | None, float | None]:
+    try:
+        price = float(cycle.get("pricePct"))
+    except (TypeError, ValueError):
+        price = None
+    try:
+        oi_pct = float(cycle.get("oiValuePct"))
+    except (TypeError, ValueError):
+        oi_pct = None
+    return price, oi_pct
+
+
+def _holding_mark(cycle: dict, qualified: bool) -> tuple[str | bool, str | None, bool]:
+    """Slot label, extra sentence, and whether this uses the holding cooldown.
+
+    Rising keeps the normal gate and only adds 【持仓】. Falling uses the lower
+    gate. Consecutive price drops plus falling open interest is the stronger alert.
+    """
+    price, oi_pct = _window_numbers(cycle)
+    if (
+        price is not None
+        and oi_pct is not None
+        and price <= -HOLDING_PRICE_DROP_PCT
+        and abs(oi_pct) >= HOLDING_OI_MOVE_PCT
+    ):
+        steps = _down_steps(cycle.get("ticks"))
+        if oi_pct <= -HOLDING_OI_MOVE_PCT and steps is not None and steps >= HOLDING_MIN_DOWN_STEPS:
+            return HOLDING_STRONG_PREFIX, HOLDING_STRONG_NOTE, True
+        return HOLDING_WARN_PREFIX, HOLDING_FALL_NOTE, True
+    if qualified and price is not None and price > 0:
+        return HOLDING_RISE_PREFIX, None, False
+    return False, None, False
+
+
+def describe(row: dict, rule: dict, chop_pct: float = 0.5, holdings=None) -> dict | None:
     change = (row.get("changes") or {}).get(rule["window"]) or {}
+    holding = _is_holding(row.get("symbol"), holdings)
     if rule.get("dynamic"):
         cycle = row.get("cycle") or {}
         if not cycle.get("ready"):
@@ -510,7 +602,8 @@ def describe(row: dict, rule: dict, chop_pct: float = 0.5) -> dict | None:
             cycle.get("oiValueDelta"),
             chop_pct,
         )
-        if not screened["qualified"]:
+        label, note, warn = _holding_mark(cycle, bool(screened["qualified"])) if holding else (False, None, False)
+        if not screened["qualified"] and not warn:
             return None
         notes = []
         if screened["doubled"]:
@@ -520,27 +613,37 @@ def describe(row: dict, rule: dict, chop_pct: float = 0.5) -> dict | None:
             )
         if screened["watershed"]:
             notes.append("未平仓金额达到2000万关键分水岭，庄家常在此离场或加速拉升")
+        if note:
+            notes.append(note)
         notes.append(screened["fact"])
         mark = "🟢" if screened["doubled"] or screened["code"] == "long" else "⚪"
         rank = 3 if screened["doubled"] else (2 if screened["code"] == "long" else 1)
         return {
-            "text": _cycle_sentence(row, cycle, "。".join(notes), mark),
+            "text": _cycle_sentence(row, cycle, "。".join(notes), mark, label),
             "move": cycle.get("oiValuePct") or 0,
             "rank": rank,
             "fact": screened["fact"],
+            "holdingWarn": warn,
         }
-    text = _compose_fixed(row, rule, chop_pct, change)
+    label = HOLDING_RISE_PREFIX if holding and _price_is_rising(change.get("pricePct")) else False
+    text = _compose_fixed(row, rule, chop_pct, change, label)
     if text is None:
         return None
-    return {"text": text, "move": change.get(rule["metric"]) or 0, "rank": 1, "fact": judge(change.get("oiValuePct"), change.get("pricePct"), chop_pct)["text"]}
+    return {
+        "text": text,
+        "move": change.get(rule["metric"]) or 0,
+        "rank": 1,
+        "fact": judge(change.get("oiValuePct"), change.get("pricePct"), chop_pct)["text"],
+        "holdingWarn": False,
+    }
 
 
-def compose(row: dict, rule: dict, chop_pct: float = 0.5) -> str | None:
-    hit = describe(row, rule, chop_pct)
+def compose(row: dict, rule: dict, chop_pct: float = 0.5, holdings=None) -> str | None:
+    hit = describe(row, rule, chop_pct, holdings)
     return None if hit is None else hit["text"]
 
 
-def _compose_fixed(row: dict, rule: dict, chop_pct: float, change: dict | None = None) -> str | None:
+def _compose_fixed(row: dict, rule: dict, chop_pct: float, change: dict | None = None, holding: str | bool = False) -> str | None:
     change = (row.get("changes") or {}).get(rule["window"]) or {}
     move = change.get(rule["metric"])
     if move is None or abs(move) < rule["minAbsPct"]:
@@ -562,7 +665,7 @@ def _compose_fixed(row: dict, rule: dict, chop_pct: float, change: dict | None =
             return None
     verdict = judge(change.get("oiValuePct"), change.get("pricePct"), chop_pct)
     mark = "🟢" if verdict["code"] == "long" else "⚪"
-    return _sentence(row, rule, change, verdict["text"], mark)
+    return _sentence(row, rule, change, verdict["text"], mark, holding)
 
 
 class BroadcastBook:
@@ -573,6 +676,7 @@ class BroadcastBook:
         self.items: list[dict] = []
         self.rules = default_rules()
         self.settings = default_settings()
+        self.holdings = HoldingsBook(self.directory)
         self.seen: dict[str, dict] = {}
         self.green_daily: dict[str, dict] = {}
         self.next_id = 1
@@ -612,10 +716,11 @@ class BroadcastBook:
         with self._lock:
             rules = [rule for rule in self.rules if rule.get("enabled")]
             chop = float(self.settings.get("priceChopPct") or 0.5)
+        holdings = self.holdings.list()
         found = []
         for row in rows:
             for rule in rules:
-                hit = describe(row, rule, chop)
+                hit = describe(row, rule, chop, holdings)
                 if hit is None:
                     continue
                 change = (row.get("changes") or {}).get(rule["window"]) or {}
@@ -645,13 +750,15 @@ class BroadcastBook:
             rules = [rule for rule in self.rules if rule.get("enabled")]
             cap = int(self.settings.get("maxPerRound") or 5)
             chop = float(self.settings.get("priceChopPct") or 0.5)
+        holdings = self.holdings.list()
         for row in rows:
             for rule in rules:
-                hit = describe(row, rule, chop)
+                hit = describe(row, rule, chop, holdings)
                 if hit is None:
                     continue
                 move = hit["move"]
-                key = f"{rule['id']}|{row['symbol']}|{'up' if move > 0 else 'down'}"
+                side = HOLDING_WARN_DIRECTION if hit.get("holdingWarn") else ("up" if move > 0 else "down")
+                key = f"{rule['id']}|{row['symbol']}|{side}"
                 matches.append((hit["rank"], abs(move), key, hit["text"], row, rule, move, hit["fact"]))
         matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
         created = []
