@@ -279,7 +279,12 @@ class BroadcastLoop:
             return
         self.note_success()
         try:
-            items = self.book.evaluate(payload.get("rows") or [], payload.get("snapshotAt"))
+            rows = payload.get("rows") or []
+            items = self.book.evaluate(
+                rows,
+                payload.get("snapshotAt"),
+                prices=_prices_outside_rows(self.monitor, self.book, rows),
+            )
             self.book.mark_scan("")
             try:
                 MEMORY.record_scan(
@@ -297,6 +302,32 @@ class BroadcastLoop:
             queue_webhooks(url, items, token)
         except Exception:  # noqa: BLE001 - the scan itself finished; keep the loop
             LOG.exception("播报处理失败")
+
+
+def _prices_outside_rows(monitor, book, rows) -> dict | None:
+    """Public last prices for holdings the scan did not return as rows."""
+    covered = set()
+    for row in rows or []:
+        if not isinstance(row, dict) or not row.get("symbol"):
+            continue
+        try:
+            price = float(row.get("price"))
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            covered.add(row["symbol"])
+    missing = [symbol for symbol in book.holdings.list() if symbol not in covered]
+    if not missing:
+        return None
+    prices_for = getattr(monitor, "prices_for", None)
+    if not callable(prices_for):
+        return None
+    try:
+        found = prices_for(missing)
+    except Exception:
+        LOG.exception("持仓现价没取到")
+        return None
+    return found if isinstance(found, dict) else None
 
 
 LOOP = BroadcastLoop(MONITOR, BOOK)
@@ -321,7 +352,7 @@ class Handler(BaseHTTPRequestHandler):
                 status = LOOP.scan_status()
                 self.send_json(200, {"ok": True, "broadcast": True, "autoTrade": False, **status})
             elif parsed.path == "/api/holdings":
-                self.send_json(200, {"holdings": BOOK.holdings.list()})
+                self.send_json(200, BOOK.holdings.public())
             elif parsed.path == "/favicon.ico":
                 self.send_response(204)
                 self.end_headers()
@@ -341,7 +372,12 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 if "symbol" not in body:
                     raise ValueError("需要币种")
-                self.send_json(200, BOOK.holdings.add(body.get("symbol"), MONITOR.known_symbols()))
+                known = MONITOR.known_symbols()
+                if "entry_price" in body and body.get("entry_price") is not None:
+                    added = BOOK.holdings.add(body.get("symbol"), known, entry_price=body.get("entry_price"))
+                else:
+                    added = BOOK.holdings.add(body.get("symbol"), known, price_lookup=MONITOR.current_price)
+                self.send_json(200, added)
             elif parsed.path == "/api/trade/preview":
                 self.guard_local()
                 self.send_json(200, DESK.preview(self.read_json()))
@@ -520,7 +556,8 @@ def main(argv: list[str] | None = None) -> int:
         except BinanceError as exc:
             print(exc, file=sys.stderr)
             return 1
-        items = BOOK.evaluate(payload.get("rows") or [], payload.get("snapshotAt"))
+        rows = payload.get("rows") or []
+        items = BOOK.evaluate(rows, payload.get("snapshotAt"), prices=_prices_outside_rows(MONITOR, BOOK, rows))
         try:
             MEMORY.record_scan(
                 BOOK.qualify(payload.get("rows") or []),

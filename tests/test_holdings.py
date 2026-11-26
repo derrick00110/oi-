@@ -40,6 +40,8 @@ class HoldingsStoreTest(unittest.TestCase):
         self.assertEqual(normalize_symbol("  MANTRAUSDT  "), "MANTRAUSDT")
         self.assertEqual(normalize_symbol("ethusdt"), "ETHUSDT")
         self.assertEqual(normalize_symbol("1000PEPE"), "1000PEPEUSDT")
+        self.assertEqual(normalize_symbol("牛来"), "牛来USDT")
+        self.assertEqual(normalize_symbol("牛来usdt"), "牛来USDT")
         for raw in ("", "   ", "USDT", "MAN TRA", None, 12, True):
             with self.assertRaises(ValueError):
                 normalize_symbol(raw)
@@ -50,7 +52,9 @@ class HoldingsStoreTest(unittest.TestCase):
             book = HoldingsBook(path)
             self.assertEqual(book.list(), ["MANTRAUSDT"])
             stored = json.loads((path / "holdings.json").read_text(encoding="utf-8"))
-            self.assertEqual(stored, ["MANTRAUSDT"])
+            self.assertEqual(stored["holdings"][0]["symbol"], "MANTRAUSDT")
+            self.assertIsNone(stored["holdings"][0]["entry_price"])
+            self.assertEqual(stored["closed_watch"], [])
             self.assertNotIn("holdings", default_settings())
 
             added = book.add("eth")
@@ -76,7 +80,9 @@ class HoldingsStoreTest(unittest.TestCase):
 
             (path / "holdings.json").write_text("not-json", encoding="utf-8")
             self.assertEqual(HoldingsBook(path).list(), ["MANTRAUSDT"])
-            self.assertEqual(json.loads((path / "holdings.json").read_text(encoding="utf-8")), ["MANTRAUSDT"])
+            repaired = json.loads((path / "holdings.json").read_text(encoding="utf-8"))
+            self.assertEqual([item["symbol"] for item in repaired["holdings"]], ["MANTRAUSDT"])
+            self.assertIsNone(repaired["holdings"][0]["entry_price"])
 
     def test_cli_add_remove_list_and_concurrent_writers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -149,7 +155,9 @@ class HoldingsApiTest(unittest.TestCase):
             book = BroadcastBook(path)
             known = {"MANTRAUSDT", "ETHUSDT"}
             body = json.dumps({"symbol": "eth"}).encode("utf-8")
-            with patch("server.BOOK", book), patch.object(server_monitor(), "known_symbols", return_value=known):
+            with patch("server.BOOK", book), patch.object(server_monitor(), "known_symbols", return_value=known), patch.object(
+                server_monitor(), "current_price", return_value=None
+            ):
                 post, posted = _handler("POST", "/api/holdings", body)
                 post.do_POST()
             self.assertEqual(posted["status"], 200)
@@ -162,7 +170,9 @@ class HoldingsApiTest(unittest.TestCase):
             self.assertEqual(rejection["status"], 400)
             self.assertIn("NOPEUSDT", rejection["payload"]["error"])
 
-            with patch("server.BOOK", book), patch.object(server_monitor(), "known_symbols", return_value=None):
+            with patch("server.BOOK", book), patch.object(server_monitor(), "known_symbols", return_value=None), patch.object(
+                server_monitor(), "current_price", return_value=None
+            ):
                 early, early_body = _handler("POST", "/api/holdings", json.dumps({"symbol": "SOL"}).encode())
                 early.do_POST()
             self.assertEqual(early_body["status"], 200)
@@ -177,8 +187,13 @@ class HoldingsApiTest(unittest.TestCase):
             self.assertEqual(deleted["payload"]["symbol"], "ETHUSDT")
             self.assertTrue(deleted["payload"]["removed"])
             self.assertEqual(listed["status"], 200)
-            self.assertEqual(listed["payload"]["holdings"], ["MANTRAUSDT", "SOLUSDT"])
-            self.assertEqual(json.loads((path / "holdings.json").read_text(encoding="utf-8")), ["MANTRAUSDT", "SOLUSDT"])
+            self.assertEqual([item["symbol"] for item in listed["payload"]["holdings"]], ["MANTRAUSDT", "SOLUSDT"])
+            self.assertIn("entry_price", listed["payload"]["holdings"][0])
+            self.assertEqual([item["symbol"] for item in listed["payload"]["closed_watch"]], ["ETHUSDT"])
+            self.assertEqual(listed["payload"]["closed_watch"][0]["green_count"], 0)
+            stored = json.loads((path / "holdings.json").read_text(encoding="utf-8"))
+            self.assertEqual([item["symbol"] for item in stored["holdings"]], ["MANTRAUSDT", "SOLUSDT"])
+            self.assertEqual(stored["closed_watch"][0]["symbol"], "ETHUSDT")
             self.assertFalse((path / "settings.json").exists())
             self.assertFalse((path / "rules.json").exists())
 
