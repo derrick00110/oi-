@@ -13,7 +13,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from oi_monitor.holdings import HoldingsBook
+from oi_monitor.holdings import CLOSED_GREEN_LIMIT, HoldingsBook
 from oi_monitor.metrics import judge, screen_change
 
 SCAN_PERIOD_SEC = 300
@@ -305,6 +305,78 @@ def _redact(text: str, token: str) -> str:
     return " ".join(redacted.split())[:180]
 
 
+def format_price(value) -> str:
+    """A price with trailing zeros trimmed. Not a USDT notional."""
+    if isinstance(value, bool):
+        return "暂无"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "暂无"
+    if number != number:
+        return "暂无"
+    text = f"{number:.8f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def stop_loss_text(symbol: str, entry, current) -> str:
+    """Alert emoji first. One sentence: reference, current price, percent change."""
+    change = (float(current) - float(entry)) / float(entry) * 100.0
+    return (
+        f"{STOP_LOSS_PREFIX} [{symbol}] "
+        f"参考价 {format_price(entry)}，现价 {format_price(current)}，涨跌 {change:+.1f}%"
+    )
+
+
+def buyback_text(symbol: str, row: dict) -> str:
+    """Alert emoji first, then the two green broadcasts and the latest open interest and price."""
+    cycle = row.get("cycle") if isinstance(row, dict) else None
+    if not isinstance(cycle, dict):
+        cycle = {}
+    changes = row.get("changes") if isinstance(row, dict) else None
+    hour = (changes or {}).get("1h") if isinstance(changes, dict) else None
+    if not isinstance(hour, dict):
+        hour = {}
+    oi_pct = cycle.get("oiValuePct")
+    if oi_pct is None:
+        oi_pct = hour.get("oiValuePct")
+    price_pct = cycle.get("pricePct")
+    if price_pct is None:
+        price_pct = hour.get("pricePct")
+    oi_value = None if not isinstance(row, dict) else row.get("oiValue")
+    price = None if not isinstance(row, dict) else row.get("price")
+    return (
+        f"{BUYBACK_PREFIX} [{symbol}] 平仓后已出现 {CLOSED_GREEN_LIMIT} 次绿色播报（OI 与价格共振上涨），"
+        f"未平仓金额：{usd_text(oi_value)}，价格 {format_price(price)}，"
+        f"未平仓金额 {signed_pct(oi_pct)}，{_tick_price_phrase(price_pct)}"
+    )
+
+
+def _merged_prices(rows, extra) -> dict:
+    """Row prices win. ``extra`` covers holdings the scan did not turn into rows."""
+    found = {}
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            found[key] = value
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = row.get("symbol")
+        price = row.get("price")
+        if symbol is not None and price is not None:
+            found[symbol] = price
+    return found
+
+
+def _symbol_base(symbol: str, rows) -> str:
+    for row in rows or []:
+        if isinstance(row, dict) and row.get("symbol") == symbol and row.get("base"):
+            return str(row["base"])
+    if isinstance(symbol, str) and symbol.endswith("USDT"):
+        return symbol[:-4]
+    return str(symbol or "")
+
+
 def signed_pct(value) -> str:
     if value is None:
         return "暂无"
@@ -365,6 +437,12 @@ HOLDING_STRONG_PREFIX = "\U0001F6A8\U0001F6A8\u3010\u6301\u4ed3\u91cd\u8981\u63d
 HOLDING_FALL_NOTE = "持仓币价格下跌，需紧盯"
 HOLDING_STRONG_NOTE = "持仓币连续下跌且未平仓金额同步下降，重要提醒，需紧盯"
 HOLDING_WARN_DIRECTION = "holding-warn"
+# Separate from the front cluster. The alert emoji is the first character, and these
+# are not green broadcasts, so they do not take the repeat mark or the daily count.
+STOP_LOSS_PREFIX = "\U0001F6A8\u3010\u6301\u4ed3\u6b62\u635f\u63d0\u9192\u00b7\u8dcc\u7834-12.5%\u3011"
+BUYBACK_PREFIX = "\U0001F514\u3010\u5e73\u4ed3\u5e01\u4e70\u56de\u63d0\u9192\u3011"
+STOP_RULE_ID = "holding-stop"
+BUYBACK_RULE_ID = "closed-buyback"
 # Bullish direction emoji. Asia/Shanghai matches the daily memory files (UTC+8, no daylight saving).
 GREEN_MARK = "\U0001F7E2"
 SHANGHAI = timezone(timedelta(hours=8))
@@ -624,17 +702,20 @@ def describe(row: dict, rule: dict, chop_pct: float = 0.5, holdings=None) -> dic
             "rank": rank,
             "fact": screened["fact"],
             "holdingWarn": warn,
+            "longGreen": screened["code"] == "long",
         }
     label = HOLDING_RISE_PREFIX if holding and _price_is_rising(change.get("pricePct")) else False
     text = _compose_fixed(row, rule, chop_pct, change, label)
     if text is None:
         return None
+    verdict = judge(change.get("oiValuePct"), change.get("pricePct"), chop_pct)
     return {
         "text": text,
         "move": change.get(rule["metric"]) or 0,
         "rank": 1,
-        "fact": judge(change.get("oiValuePct"), change.get("pricePct"), chop_pct)["text"],
+        "fact": verdict["text"],
         "holdingWarn": False,
+        "longGreen": verdict["code"] == "long",
     }
 
 
@@ -742,7 +823,7 @@ class BroadcastBook:
         found.sort(key=lambda item: (item["rank"], abs(item["move"])), reverse=True)
         return found
 
-    def evaluate(self, rows: list[dict], snapshot_at: int | None, now: float | None = None) -> list[dict]:
+    def evaluate(self, rows: list[dict], snapshot_at: int | None, now: float | None = None, prices: dict | None = None) -> list[dict]:
         moment = time.time() if now is None else now
         snapshot = int(snapshot_at or 0)
         matches = []
@@ -759,11 +840,14 @@ class BroadcastBook:
                 move = hit["move"]
                 side = HOLDING_WARN_DIRECTION if hit.get("holdingWarn") else ("up" if move > 0 else "down")
                 key = f"{rule['id']}|{row['symbol']}|{side}"
-                matches.append((hit["rank"], abs(move), key, hit["text"], row, rule, move, hit["fact"]))
+                matches.append(
+                    (hit["rank"], abs(move), key, hit["text"], row, rule, move, hit["fact"], bool(hit.get("longGreen")))
+                )
         matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
         created = []
+        buyback_rows = []
         with self._lock:
-            for _rank, _score, key, text, row, rule, move, fact in matches:
+            for _rank, _score, key, text, row, rule, move, fact, long_green in matches:
                 if len(created) >= cap:
                     break
                 previous = self.seen.get(key) or {}
@@ -791,10 +875,59 @@ class BroadcastBook:
                 self.items.append(item)
                 self.seen[key] = {"snapshot": snapshot, "at": moment}
                 created.append(item)
+                # Only a broadcast that actually went out counts. Resonance means
+                # open interest and price both rose; a green mark from a doubling
+                # while price fell does not.
+                if long_green:
+                    fired = self.holdings.note_long_green(row["symbol"], int(moment * 1000))
+                    if fired is not None:
+                        buyback_rows.append(row)
+            for event in self.holdings.observe_prices(_merged_prices(rows, prices)):
+                created.append(self._alert_item(self._stop_item(event, moment, rows)))
+            for row in buyback_rows:
+                created.append(self._alert_item(self._buyback_item(row, moment)))
             if created:
                 self.items = self.items[-5000:]
                 self._write_state()
         return created
+
+    def _alert_item(self, item: dict) -> dict:
+        self.next_id += 1
+        self.items.append(item)
+        return item
+
+    def _stop_item(self, event: dict, moment: float, rows) -> dict:
+        symbol = event["symbol"]
+        entry = float(event["entry_price"])
+        current = float(event["price"])
+        change = (current - entry) / entry * 100.0
+        return {
+            "id": self.next_id,
+            "at": int(moment * 1000),
+            "symbol": symbol,
+            "base": _symbol_base(symbol, rows),
+            "ruleId": STOP_RULE_ID,
+            "window": "5m",
+            "metric": "price",
+            "move": round(change, 4),
+            "text": stop_loss_text(symbol, entry, current),
+            "fact": "持仓币跌破参考价 12.5%，止损提醒",
+        }
+
+    def _buyback_item(self, row: dict, moment: float) -> dict:
+        symbol = row.get("symbol") or ""
+        return {
+            "id": self.next_id,
+            "at": int(moment * 1000),
+            "symbol": symbol,
+            "base": row.get("base") or _symbol_base(symbol, [row]),
+            "ruleId": BUYBACK_RULE_ID,
+            "window": "5m",
+            "metric": "oiValuePct",
+            "move": round(float((row.get("cycle") or {}).get("oiValuePct") or 0), 4),
+            "text": buyback_text(symbol, row),
+            "fact": "平仓后已出现 2 次绿色播报，买回提醒",
+        }
 
     def replace_rules(self, raw) -> list[dict]:
         cleaned = clean_rules(raw)

@@ -25,6 +25,7 @@ class Monitor:
         self._inflight: dict[int, threading.Event] = {}
         self._fail: dict[int, Exception] = {}
         self._known: set[str] | None = None
+        self._ticker_prices: dict[str, float] = {}
 
     def scan(self, limit: int | None, fresh: bool = False) -> dict:
         key = 0 if limit is None else limit
@@ -122,6 +123,16 @@ class Monitor:
                 continue
             universe.append((volume, symbol, base, ticker))
         universe.sort(key=lambda item: item[0], reverse=True)
+        ticker_prices = {}
+        for _volume, symbol, _base, ticker in universe:
+            try:
+                last = float(ticker["lastPrice"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if last > 0:
+                ticker_prices[symbol] = last
+        with self._lock:
+            self._ticker_prices = ticker_prices
         if not universe:
             raise BinanceError("没有找到交易中的 USDT 永续合约")
         chosen = universe if limit is None else universe[:limit]
@@ -170,6 +181,40 @@ class Monitor:
             "errors": errors[:12],
             "rows": rows,
         }
+
+    def prices_for(self, symbols) -> dict[str, float]:
+        """Last prices already fetched with the public 24h ticker. No extra request."""
+        with self._lock:
+            cached = dict(self._ticker_prices)
+        found = {}
+        for symbol in symbols or []:
+            price = cached.get(symbol)
+            if price is not None and price > 0:
+                found[symbol] = price
+        return found
+
+    def current_price(self, symbol: str) -> float | None:
+        """Public last price for one perpetual. Account and order routes are never called."""
+        if not isinstance(symbol, str):
+            return None
+        key = symbol.strip().upper()
+        if not key:
+            return None
+        cached = self.prices_for([key]).get(key)
+        if cached is not None:
+            return cached
+        try:
+            data = self.client.get_json("/fapi/v1/ticker/price", {"symbol": key}, timeout=8)
+            price = float(data["price"])
+        except Exception:
+            log.warning("现价没取到 %s", key)
+            return None
+        if not price > 0:
+            return None
+        price = round(price, 8)
+        with self._lock:
+            self._ticker_prices[key] = price
+        return price
 
     def known_symbols(self) -> set[str] | None:
         """USDT perpetuals from the latest exchangeInfo, or None before the first scan."""

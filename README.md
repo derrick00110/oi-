@@ -37,6 +37,7 @@ U 本位合约：
 
 - `GET /fapi/v1/exchangeInfo`：找出正在交易的 USDT 永续
 - `GET /fapi/v1/ticker/24hr`：最新价、24 小时涨跌、成交额。不带 symbol 时一次返回全部，权重 40
+- `GET /fapi/v1/ticker/price`：单个合约的最新价。只在添加持仓、而这一轮扫描的缓存里还没有这个币时用，权重 1。不是账户接口
 - `GET /fapi/v1/premiumIndex`：标记价格和 `lastFundingRate`。不带 symbol 时一次返回全部，权重 10。不按币种去拉资金费率历史，那条线另外限 500 次 / 5 分钟
 - `GET /futures/data/openInterestHist`：`sumOpenInterest`、`sumOpenInterestValue`、`CMCCirculatingSupply`。周期用 `5m`。这条线的 IP 限额是 1000 次 / 5 分钟，程序本地先卡在 800 次 / 5 分钟
 
@@ -79,7 +80,7 @@ python3 server.py --once --limit 30
 
 同一币种、同一条规则、同一方向，冷却时间内不重复播。默认 30 分钟（规则里的 `cooldownSec` 为 1800）。可以改得更长，最短 30 分钟；短于 30 分钟会在保存时被拒绝。已经写在 `rules.json` 里、还停在旧的 900 秒的规则，启动时会抬到 30 分钟，其它字段保留。每轮条数上限和同一快照不重复播，这两条仍在。滚动窗口大约 20 分钟，15 分钟冷却会在同一段涨跌还没滚出窗口时再播一次，所以默认放到 30 分钟。
 
-持仓写在 `data/holdings.json`，一开始是 `["MANTRAUSDT"]`。每一轮扫描重新读这个文件。说「持仓 XXX」就加入，说「平仓 XXX」就移除。XXX 可以是 MANTRA，也可以是 MANTRAUSDT，都会记成 MANTRAUSDT。
+持仓写在 `data/holdings.json`。缺这个文件时先放进 MANTRAUSDT。每一轮扫描重新读这个文件。说「持仓 XXX」就加入，说「平仓 XXX」就移除。XXX 可以是 MANTRA，也可以是 MANTRAUSDT，都会记成 MANTRAUSDT。
 
 ```bash
 python -m oi_monitor.holdings add MANTRA
@@ -87,7 +88,27 @@ python -m oi_monitor.holdings remove MANTRA
 python -m oi_monitor.holdings list
 ```
 
-接口是 `GET /api/holdings`、`POST /api/holdings`（`{"symbol":"MANTRA"}`）和 `DELETE /api/holdings/<symbol>`，和命令行改的是同一个文件。服务器已经扫过行情时，添加会对照当时的 USDT 永续列表。不需要 API Key。
+接口是 `GET /api/holdings`、`POST /api/holdings`（`{"symbol":"MANTRA"}`）和 `DELETE /api/holdings/<symbol>`，和命令行改的是同一个文件。服务器已经扫过行情时，添加会对照当时的 USDT 永续列表。不需要 API Key。币种可以不是 ASCII，例如 `牛来`、`牛来USDT`。删除时路径里的符号按 URL 编码，`牛来USDT` 写成 `%E7%89%9B%E6%9D%A5USDT`，服务端会解码。JSON 文件按原文保存，不转成 `\u` 转义。
+
+`data/holdings.json` 现在是对象。旧的字符串数组还能读，读到就改写成新格式。每一条持仓有参考价 `entry_price`。`POST /api/holdings` 可以多带一个 `entry_price`，有它就用它，没有就记下添加这一刻的币安公开最新价。当时没取到价，或者文件里本来就没有参考价的币，下一轮扫描用当时的最新价补上，只补这一次，不覆盖已经记下的参考价。`GET /api/holdings` 的 `holdings` 是 `{symbol, entry_price}`，另外带只读的 `closed_watch`：`{symbol, closed_at, green_count}`。`closed_at` 是毫秒。
+
+`DELETE /api/holdings/<symbol>` 把这个币从持仓拿掉，并放进 `closed_watch`，绿色计数从 0 开始。之后每次真正发出的普通绿色播报（未平仓金额和价格一起上涨，不是价格在跌、只因翻倍而标绿的那条）给它加 1。加到 2，就再发一条买回提醒，然后从 `closed_watch` 删掉。中途重新 `POST` 回持仓，也会从 `closed_watch` 删掉。这次上线之前已经平掉的币不会补进这个列表，只从新的删除开始记。
+
+这两条提醒都进原来的播报：终端日志、`/api/broadcasts`、配了地址就走 webhook。请求体还是 `text`、`symbol`、`id`。不下单，不读账户，不用 API Key。每轮条数上限不把它们挤掉。它们不是绿色播报，不加 `🔁`，也不算进「今日第 N 次绿色播报」。
+
+持仓币相对参考价跌到 12.5% 或更多（现价 ≤ 参考价 × 0.875）时，表情放在最前面：
+
+```text
+🚨【持仓止损提醒·跌破-12.5%】 [MANTRAUSDT] 参考价 1.25，现价 1.09，涨跌 -12.8%
+```
+
+同一个币同一次跌破只发一条，不会每 5 分钟再发。价格回到线的上面，之后再次跌破，才会再发。把这个币重新加入持仓也会重新武装，参考价改成新的那一次。
+
+平仓之后凑满 2 次绿色共振，表情同样在最前面，后面是这次的未平仓金额和价格：
+
+```text
+🔔【平仓币买回提醒】 [MANTRAUSDT] 平仓后已出现 2 次绿色播报（OI 与价格共振上涨），未平仓金额：750 万美元，价格 0.42，未平仓金额 +12.0%，第 1 次到第 5 次刻度价格上涨 6.0%
+```
 
 持仓币价格上涨时，门槛仍是 10%、9%、5%。普通播报一旦发出，文首持仓位只写 `【持仓】`，不加别的表情。价格下跌时另看更低的门槛：最近 5 次刻度价格下跌至少 2%，并且未平仓金额涨跌绝对值至少 3%，就在持仓位写 `🚨【持仓警示】`，句末加上「持仓币价格下跌，需紧盯。」。如果这 4 段里至少 3 段价格在跌，并且未平仓金额也在跌、跌幅至少 3%，持仓位改成 `🚨🚨【持仓重要提醒·连跌OI降共振】`，句末是「持仓币连续下跌且未平仓金额同步下降，重要提醒，需紧盯。」。原来的形态结论和 2000 万分水岭还在。这条下跌警示单独冷却，不会被同一币更早的绿色播报挡住。从持仓里拿掉之后，下一轮不再加这些标记。
 
